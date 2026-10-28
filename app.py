@@ -641,12 +641,6 @@ class StationRuntime:
         self.prod_pipe = EdgePipeline()
         self.prod_pipe.value = 1 if resume_prod else 0
         self.count_pipe = CountPipeline() if cfg["has_count"] else None
-        # Production is sent PRODUCTION_SEND_DELAY_SECONDS after Uptime, but Count fires on the
-        # same Start edge. The backend rejects Count until Production is registered, so Counts
-        # that fire while a Production send is pending wait here and go out right after it.
-        self.prod_lock = threading.Lock()
-        self.prod_pending = False
-        self.deferred_counts = []
         # Reject mirrors a DM word (D272) directly -- not a bit, so no CountPipeline.
         self.last_reject_value = resume_reject if (cfg["has_reject"] and cfg["reject"]) else None
 
@@ -683,21 +677,6 @@ runtimes = {s["code"]: StationRuntime(s,
 # ==================================================================== POLLING LOOP
 _next_due: dict = {s["code"]: 0.0 for s in STATIONS}  # monotonic time each station is next due
 
-def send_production_then_counts(rt, code, mc_no, value):
-    """Timer target: send Production, then release any Counts that were held back
-    waiting for it (see StationRuntime.deferred_counts). Counts are sent AFTER
-    Production, so if Production lands in the retry queue the Count queues behind it
-    and the FIFO retry loop still delivers them in the right order."""
-    try:
-        send_signal(code, mc_no, "production", value)
-    except Exception as e:
-        log.error("production send error for %s (continuing): %s", code, e)
-    with rt.prod_lock:
-        rt.prod_pending = False
-        held, rt.deferred_counts = rt.deferred_counts, []
-    for total in held:
-        send_signal(code, mc_no, "count", total)
-
 def poll_station(s):
     code, mc_no = s["code"], s["mc_no"]
     rt = runtimes[code]
@@ -727,25 +706,15 @@ def poll_station(s):
     # the same reason (their backend needs time to register Uptime first).
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
     if pchanged:
-        with rt.prod_lock:
-            rt.prod_pending = True
-        threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_production_then_counts,
-                        args=(rt, code, mc_no, pv)).start()
+        threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", pv)).start()
 
     # Count: only Station 5 -- Start bit rising edge = one finished unit. Sent
-    # immediately, EXCEPT when this same poll cycle (or an earlier one) has a
-    # Production send still pending: the backend rejects Count with "Machine
-    # Currently Not Running In Production" until Production is registered, and
-    # Count fires on the same edge that triggers Production. In that case the Count
-    # is held and sent right after Production (send_production_then_counts).
+    # immediately, never held for Production. If the backend refuses it (e.g. "Not
+    # Running In Production" because Production hasn't registered yet), the normal
+    # retry queue re-sends it later so the count is not lost.
     if rt.count_pipe and rt.count_pipe.feed(start_raw):
         total = store.bump_total(code, "count")
-        with rt.prod_lock:
-            hold = rt.prod_pending
-            if hold:
-                rt.deferred_counts.append(total)
-        if not hold:
-            send_signal(code, mc_no, "count", total)
+        send_signal(code, mc_no, "count", total)
 
     # Reject: only Station 5. D272 is a DM WORD holding the PLC's own running
     # NG/reject count (TOGO_DisplayValue_Judgment_NG) -- confirmed directly in
