@@ -6,7 +6,6 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.classList.add("active");
     document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
     if (btn.dataset.tab === "history") loadHistory();
-    if (btn.dataset.tab === "queue") loadQueue();
     if (btn.dataset.tab === "connection") loadConnection();
   });
 });
@@ -116,14 +115,6 @@ async function clearHistory() {
 }
 function histPrev() { histOffset = Math.max(0, histOffset - HIST_LIMIT); loadHistory(); }
 function histNext(total) { if (histOffset + HIST_LIMIT < total) { histOffset += HIST_LIMIT; loadHistory(); } }
-
-async function loadQueue() {
-  const r = await (await fetch("/api/queue?limit=200")).json();
-  document.getElementById("queueBody").innerHTML = r.items.map(i => `<tr>
-    <td>${i.created_at}</td><td>${i.station_code}</td><td>${i.signal}</td>
-    <td style="font-size:11px">${i.msg_no}</td><td>${i.attempts}</td>
-  </tr>`).join("");
-}
 
 async function loadConnection() {
   const d = await (await fetch("/api/config")).json();

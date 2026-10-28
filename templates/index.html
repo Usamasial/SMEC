@@ -21,7 +21,6 @@
   <nav class="tabs">
     <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="history">History</button>
-    <button class="tab-btn" data-tab="queue">Retry Queue</button>
     <button class="tab-btn" data-tab="connection">Connection Info</button>
   </nav>
 
@@ -58,14 +57,6 @@
         <tbody id="historyBody"></tbody>
       </table>
       <div id="historyPager" class="pager"></div>
-    </section>
-
-    <section id="tab-queue" class="tab-panel">
-      <p class="hint">Items waiting to be resent because the API did not respond successfully.</p>
-      <table class="data-table">
-        <thead><tr><th>Queued At</th><th>Station</th><th>Signal</th><th>msg_no</th><th>Attempts</th></tr></thead>
-        <tbody id="queueBody"></tbody>
-      </table>
     </section>
 
     <section id="tab-connection" class="tab-panel">
