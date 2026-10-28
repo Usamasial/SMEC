@@ -380,15 +380,19 @@ def test_concurrent_db_access_does_not_crash():
 
     os.remove("test6.db")
 
-def test_count_sent_immediately_not_held_for_production():
-    """Count must go out on the same poll as the Start edge, even while Production
-    is still pending its delayed send."""
+def test_count_held_until_production_registered():
+    """Count fires on the Start edge, but must NOT be sent until Production has been
+    sent and the backend settle time has passed (else the backend refuses it and it
+    shows as 'queued'). Once nothing is pending, Count goes out immediately."""
     sent = []
-    orig_send, orig_delay, orig_fins = smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS, smec.fins
+    orig = (smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS,
+            smec.COUNT_AFTER_PRODUCTION_DELAY_SECONDS, smec.fins)
     smec.send_signal = lambda code, mc, sig, val: sent.append((sig, val))
     smec.PRODUCTION_SEND_DELAY_SECONDS = 0.2
+    smec.COUNT_AFTER_PRODUCTION_DELAY_SECONDS = 0.2
+    bits = {"start": True}
     class FakeFins:
-        def read_bit(self, w, b): return (w, b) == (11, 6)
+        def read_bit(self, w, b): return bits["start"] if (w, b) == (11, 6) else False
         def read_word(self, w): return 0
         def close(self): pass
     smec.fins = FakeFins()
@@ -399,13 +403,21 @@ def test_count_sent_immediately_not_held_for_production():
         smec.runtimes["STATION_5"] = rt
         smec.store = smec.Store(__import__("pathlib").Path("test7.db"))
         smec.poll_station(cfg)
-        assert [x[0] for x in sent] == ["uptime", "count"], f"Count must be immediate, got {sent}"
-        time.sleep(0.4)
-        assert [x[0] for x in sent] == ["uptime", "count", "production"], sent
+        assert [x[0] for x in sent] == ["uptime"], f"Count must be held, got {sent}"
+        time.sleep(0.3)  # production sent, settle time not yet over
+        assert [x[0] for x in sent] == ["uptime", "production"], f"Count must still wait: {sent}"
+        time.sleep(0.3)
+        assert [x[0] for x in sent] == ["uptime", "production", "count"], f"order wrong: {sent}"
+        # nothing pending now -> next Count is immediate
+        rt.count_pipe.last_edge_at = time.monotonic() - 1000
+        bits["start"] = False; smec.poll_station(cfg)
+        bits["start"] = True; smec.poll_station(cfg)
+        assert sent[-1][0] == "count" and len(sent) == 4, sent
     finally:
-        smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS, smec.fins = orig_send, orig_delay, orig_fins
+        (smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS,
+         smec.COUNT_AFTER_PRODUCTION_DELAY_SECONDS, smec.fins) = orig
         import os; os.path.exists("test7.db") and os.remove("test7.db")
-    print("PASS: Count is sent immediately, not held for Production")
+    print("PASS: Count waits for Production + settle time, then is sent; later Counts are immediate")
 
 def test_line_idle_watchdog_and_packet():
     """No station signal for LINE_IDLE_SECONDS -> one prodStatus=0 packet for mc_no SMEC,
@@ -460,6 +472,6 @@ if __name__ == "__main__":
     test_production_internal_only_and_count_independent()
     test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
-    test_count_sent_immediately_not_held_for_production()
+    test_count_held_until_production_registered()
     test_line_idle_watchdog_and_packet()
     print("\nALL TESTS PASSED")
