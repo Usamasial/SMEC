@@ -380,6 +380,40 @@ def test_concurrent_db_access_does_not_crash():
 
     os.remove("test6.db")
 
+def test_count_waits_for_pending_production():
+    """Reproduces the on-site failure: Station 5's Count fired 1s after Uptime, before the
+    delayed Production send, and the backend rejected it ("Not Running In Production").
+    Count must be held while Production is pending, then sent right AFTER it."""
+    sent = []
+    orig_send, orig_delay, orig_fins = smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS, smec.fins
+    smec.send_signal = lambda code, mc, sig, val: sent.append((sig, val))
+    smec.PRODUCTION_SEND_DELAY_SECONDS = 0.2
+    bits = {"start": True}
+    class FakeFins:
+        def read_bit(self, w, b): return bits["start"] if (w, b) == (11, 6) else False
+        def read_word(self, w): return 0
+        def close(self): pass
+    smec.fins = FakeFins()
+    try:
+        cfg = smec.STATIONS_BY_CODE["STATION_5"]
+        rt = smec.StationRuntime(cfg, resume_reject=0)
+        rt.count_pipe.last_edge_at = time.monotonic() - 1000
+        smec.runtimes["STATION_5"] = rt
+        smec.store = smec.Store(__import__("pathlib").Path("test7.db"))
+        smec.poll_station(cfg)  # Start rises: Uptime now, Production pending, Count must wait
+        assert [x[0] for x in sent] == ["uptime"], f"Count must be held, got {sent}"
+        time.sleep(0.5)
+        assert [x[0] for x in sent] == ["uptime", "production", "count"], f"order wrong: {sent}"
+        # Production no longer pending -> a later Count goes out immediately
+        rt.count_pipe.last_edge_at = time.monotonic() - 1000
+        bits["start"] = False; smec.poll_station(cfg)
+        bits["start"] = True; smec.poll_station(cfg)
+        assert sent[-1][0] == "count" and len(sent) == 4
+    finally:
+        smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS, smec.fins = orig_send, orig_delay, orig_fins
+        import os; os.path.exists("test7.db") and os.remove("test7.db")
+    print("PASS: Count is held until Production is sent, then released in order")
+
 if __name__ == "__main__":
     test_fins_frame()
     test_edge_pipeline()
@@ -394,4 +428,5 @@ if __name__ == "__main__":
     test_production_internal_only_and_count_independent()
     test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
+    test_count_waits_for_pending_production()
     print("\nALL TESTS PASSED")
