@@ -23,9 +23,6 @@ function statusChip(id, ok, okText, badText) {
 async function loadDashboard() {
   const d = await (await fetch("/api/dashboard")).json();
   statusChip("plcChip", d.plc_connected, "PLC: Connected", "PLC: Disconnected");
-  const qEl = document.getElementById("queueChip");
-  qEl.className = "chip " + (d.queue_size > 0 ? "chip-bad" : "chip-ok");
-  qEl.textContent = `Queue: ${d.queue_size}`;
 
   // Process-flow strip: the real physical sequence of the line (Station 1 -> 5),
   // each dot reflecting that station's live status at a glance.
