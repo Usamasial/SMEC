@@ -419,44 +419,50 @@ def test_count_immediate_and_sent_on_http_200():
     srv.shutdown(); os.remove("test7.db")
     print("PASS: Count is 'sent' on HTTP 200 even if the body refuses it; other signals unchanged")
 
-def test_line_idle_watchdog_and_packet():
-    """No station signal for LINE_IDLE_SECONDS -> one prodStatus=0 packet for mc_no SMEC,
-    in the developer's exact shape; re-arms after activity; failure goes to retry queue."""
+def test_production_stop_packet_per_station():
+    """After DOWNTIME_GRACE_SECONDS with no running signal, the station sends the developer's
+    exact stop packet (its own mc_no, prodStatus 0, DD-MM-YYYY, no package_no/msg_no)."""
     import os, re
-    orig = smec.LINE_IDLE_SECONDS
-    smec.LINE_IDLE_SECONDS = 0.2
+    srv = http.server.HTTPServer(("127.0.0.1", 8767), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    orig = (smec.ENDPOINTS["production"], smec.fins, smec.DOWNTIME_GRACE_SECONDS, smec.send_signal)
+    smec.ENDPOINTS["production"] = "http://127.0.0.1:8767/api/production"
+    smec.DOWNTIME_GRACE_SECONDS = 0.2
+    smec.send_signal = lambda *a, **k: None   # ignore uptime/production=1 sends here
+    bits = {"start": True}
+    class FakeFins:
+        def read_bit(self, w, b): return bits["start"] if (w, b) == (11, 0) else False
+        def read_word(self, w): return 0
+        def close(self): pass
+    smec.fins = FakeFins()
+    if os.path.exists("test8.db"): os.remove("test8.db")
+    smec.store = smec.Store(__import__("pathlib").Path("test8.db"))
     try:
-        w = smec.LineIdleWatchdog()
-        assert w.due() is False, "must not fire immediately after start/restart"
-        time.sleep(0.25)
-        assert w.due() is True, "must fire after the idle window"
-        assert w.due() is False, "must fire only ONCE per idle episode"
-        w.note_activity()
-        time.sleep(0.25)
-        assert w.due() is True, "must re-arm after activity returns"
-        print("PASS: idle watchdog fires once per idle episode and re-arms on activity")
-
-        srv = http.server.HTTPServer(("127.0.0.1", 8767), Handler)
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        smec.ENDPOINTS["production"] = "http://127.0.0.1:8767/api/production"
-        if os.path.exists("test8.db"): os.remove("test8.db")
-        smec.store = smec.Store(__import__("pathlib").Path("test8.db"))
+        cfg = smec.STATIONS_BY_CODE["STATION_3"]   # start = W11.00
+        smec.runtimes["STATION_3"] = smec.StationRuntime(cfg)
         Handler.fail_count = 0
-        smec.send_line_idle()
+        smec.poll_station(cfg)            # running
+        bits["start"] = False
+        smec.poll_station(cfg)            # off, grace starts
+        time.sleep(0.3)
+        smec.poll_station(cfg)            # grace over -> stop packet
+        for _ in range(40):
+            if smec.store.history_page(signal="production_stop")[1]: break
+            time.sleep(0.05)
         d = Handler.last_body["data"]["data"]
-        assert set(d) == {"datetime", "mc_no", "prodStatus"}, f"body must match the spec exactly, got {d}"
-        assert d["mc_no"] == "SMEC" and d["prodStatus"] == 0
+        assert set(d) == {"datetime", "mc_no", "prodStatus"}, d
+        assert d["mc_no"] == "STATION_3" and d["prodStatus"] == 0
         assert re.fullmatch(r"\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}", d["datetime"]), d["datetime"]
-        items, total = smec.store.history_page(signal="line_idle")
-        assert total == 1 and items[0]["status"] == "sent"
+        items, total = smec.store.history_page(signal="production_stop")
+        assert total == 1 and items[0]["station_code"] == "STATION_3"
         Handler.fail_count = 1
-        smec.send_line_idle()
-        assert smec.store.queue_count() == 1, "failed packet must go to the retry queue"
-        srv.shutdown()
-        os.remove("test8.db")
-        print("PASS: line-idle packet matches the spec (SMEC, prodStatus 0, DD-MM-YYYY) and retries on failure")
+        smec.send_production_stop("STATION_3", "STATION_3")
+        assert smec.store.queue_count() == 1, "failed stop packet must go to the retry queue"
     finally:
-        smec.LINE_IDLE_SECONDS = orig
+        srv.shutdown()
+        smec.ENDPOINTS["production"], smec.fins, smec.DOWNTIME_GRACE_SECONDS, smec.send_signal = orig
+        os.path.exists("test8.db") and os.remove("test8.db")
+    print("PASS: per-station stop packet matches the spec after 3 min (grace) of silence and retries on failure")
 
 if __name__ == "__main__":
     test_fins_frame()
@@ -473,5 +479,5 @@ if __name__ == "__main__":
     test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
     test_count_immediate_and_sent_on_http_200()
-    test_line_idle_watchdog_and_packet()
+    test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")

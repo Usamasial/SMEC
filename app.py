@@ -71,13 +71,6 @@ PRODUCTION_SEND_DELAY_SECONDS = 5.0
 # alone (see COUNT_SENT_ON_HTTP_200). The backend's own "Not Running In Production"
 # business rule is NOT treated as a failure for Count and does not queue it.
 COUNT_SENT_ON_HTTP_200 = True
-# -- Line-level idle watchdog. If NO station shows a running signal (Start/Sensor 2)
-# for LINE_IDLE_SECONDS, send one "production stopped" packet for the whole line
-# (mc_no "SMEC", prodStatus 0) to the production endpoint. Sent once per idle
-# episode; re-arms as soon as any station signal comes back. Change the delay here
-# (60 = 1 min, 120 = 2 min, 180 = 3 min).
-LINE_IDLE_SECONDS = 180
-LINE_MC_NO = "SMEC"
 # Reliability settings (max retry attempts, retry interval, queue cap) and per-station
 # poll interval are now USER-EDITABLE from the Connection Info tab -- they live in the
 # settings table (see DEFAULT_SETTINGS below), not as fixed constants here.
@@ -512,17 +505,18 @@ def send_signal(station_code, mc_no, signal, value):
         store.enqueue(station_code, signal, payload, url, msg_no)
         bus.publish("queued", {"station": station_code, "signal": signal, "value": value, "error": error})
 
-def send_line_idle():
-    """Line-level 'production stopped' packet: {"data":{"data":{datetime, mc_no:"SMEC",
-    prodStatus:0}}} -- exactly the shape the developer specified (no package_no/msg_no
-    in the body). Same delivery path as send_signal: log, post, retry queue on failure.
-    msg_no is only our own unique key for history/queue, it is not sent."""
+def send_production_stop(station_code, mc_no):
+    """Per-machine 'production stopped' packet, sent once a station has shown no running
+    signal for DOWNTIME_GRACE_SECONDS (3 minutes). Body is exactly the shape the developer
+    specified -- {"data":{"data":{datetime (DD-MM-YYYY), mc_no, prodStatus: 0}}} -- with
+    no package_no/msg_no. Same delivery path as send_signal: log, post, retry queue on
+    failure. msg_no is only our own unique key for history/queue, it is not sent."""
     dt = now_myt_line_string()
-    seq = store.next_seq(LINE_MC_NO, "line_idle")
-    msg_no = f"{LINE_MC_NO}/{PACKAGE_NO['production']}_{dt}_{seq}"
-    payload = {"data": {"data": {"datetime": dt, "mc_no": LINE_MC_NO, "prodStatus": 0}}}
+    seq = store.next_seq(station_code, "production_stop")
+    msg_no = f"{mc_no}/{PACKAGE_NO['production']}_{dt}_{seq}"
+    payload = {"data": {"data": {"datetime": dt, "mc_no": mc_no, "prodStatus": 0}}}
     url = ENDPOINTS["production"]
-    store.log_history(LINE_MC_NO, "line_idle", 0, LINE_MC_NO, PACKAGE_NO["production"], msg_no, dt, status="sending")
+    store.log_history(station_code, "production_stop", 0, mc_no, PACKAGE_NO["production"], msg_no, dt, status="sending")
     try:
         r = _session.post(url, json=payload, timeout=HTTP_TIMEOUT)
         ok, error = _check_response(r)
@@ -531,31 +525,11 @@ def send_line_idle():
         ok, http_status, error = False, None, str(e)[:300]
     if ok:
         store.update_history_status(msg_no, "sent", http_status)
-        bus.publish("sent", {"station": LINE_MC_NO, "signal": "line_idle", "value": 0})
+        bus.publish("sent", {"station": station_code, "signal": "production_stop", "value": 0})
     else:
         store.update_history_status(msg_no, "queued", http_status, error)
-        store.enqueue(LINE_MC_NO, "line_idle", payload, url, msg_no)
-        bus.publish("queued", {"station": LINE_MC_NO, "signal": "line_idle", "value": 0, "error": error})
-
-class LineIdleWatchdog:
-    """Tracks the last time ANY station showed a running signal. Fires once when the
-    whole line has been silent for LINE_IDLE_SECONDS, and re-arms on the next signal.
-    Starts 'just active' so an app restart waits the full delay before the first send."""
-    def __init__(self):
-        self.last_activity = time.monotonic()
-        self.fired = False
-
-    def note_activity(self):
-        self.last_activity = time.monotonic()
-        self.fired = False
-
-    def due(self) -> bool:
-        if not self.fired and time.monotonic() - self.last_activity >= LINE_IDLE_SECONDS:
-            self.fired = True
-            return True
-        return False
-
-line_watchdog = LineIdleWatchdog()
+        store.enqueue(station_code, "production_stop", payload, url, msg_no)
+        bus.publish("queued", {"station": station_code, "signal": "production_stop", "value": 0, "error": error})
 
 def retry_loop():
     """Same defensive wrapping as poll_forever -- an uncaught exception here must
@@ -708,8 +682,6 @@ def poll_station(s):
     # Uptime -- driven by the Start bit, OR'd with Sensor 2 when the station has one
     # (only Station 1 -- either bit firing counts as "running", per the client's PDF).
     effective_trigger = start_raw or sensor2_raw
-    if effective_trigger:
-        line_watchdog.note_activity()
     uv, uchanged = rt.uptime_pipe.feed(effective_trigger)
     if uchanged:
         send_signal(code, mc_no, "uptime", uv)
@@ -720,7 +692,11 @@ def poll_station(s):
     # the same reason (their backend needs time to register Uptime first).
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
     if pchanged:
-        threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", pv)).start()
+        if pv == 1:
+            threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", pv)).start()
+        else:
+            # No running signal for DOWNTIME_GRACE_SECONDS -> per-machine stop packet.
+            threading.Thread(target=send_production_stop, args=(code, mc_no), daemon=True).start()
 
     # Count: only Station 5 -- Start bit rising edge = one finished unit. Sent
     # immediately, never held for Production.
@@ -767,10 +743,6 @@ def poll_forever():
                     poll_station(s)
                     interval = store.get_poll_interval(s["code"], s["poll_interval"])
                     _next_due[s["code"]] = time.monotonic() + interval
-            # Only judge "idle" while the PLC is actually answering -- if reads are
-            # failing we can't know the line is idle, so don't report it as stopped.
-            if all(st["plc_ok"] for st in store.get_states().values()) and line_watchdog.due():
-                threading.Thread(target=send_line_idle, daemon=True).start()
         except Exception as e:
             log.error("poll_forever loop error (continuing): %s", e)
         time.sleep(TICK_SECONDS)
