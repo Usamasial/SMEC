@@ -808,7 +808,7 @@ def bad(msg, code=400): return JSONResponse(status_code=code, content={"detail":
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return open("templates/index.html").read()
+    return open("templates/index.html", encoding="utf-8").read()
 
 @app.get("/api/stations")
 def api_stations():
