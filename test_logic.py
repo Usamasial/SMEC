@@ -153,8 +153,9 @@ def test_wrapped_response_status():
     # HTTP 200, but body says status="500" -- must be treated as a FAILURE, not success
     WrappedHandler.reply_status = "500"
     smec.send_signal("STATION_5", "STATION_5", "uptime", 1)
-    assert smec.store.queue_count() == 1, "HTTP 200 with wrapped status=500 must still be queued as failed"
-    print("PASS: HTTP 200 with wrapped status=500 correctly treated as failure")
+    assert smec.store.queue_count() == 0, "a backend refusal (HTTP 200, body status=500) must NOT be queued"
+    assert smec.store.history_page(status="rejected")[1] == 1, "it must be recorded as 'rejected'"
+    print("PASS: HTTP 200 with wrapped status=500 is recorded as rejected, not queued")
 
     # HTTP 200, body says status="200" -- real success
     WrappedHandler.reply_status = "200"
@@ -414,8 +415,8 @@ def test_count_immediate_and_sent_on_http_200():
     smec.send_signal("STATION_5", "STATION_5", "count", 1)
     smec.send_signal("STATION_5", "STATION_5", "uptime", 1)
     assert smec.store.history_page(signal="count", status="sent")[1] == 1, "Count must be 'sent' on HTTP 200"
-    assert smec.store.history_page(signal="uptime", status="queued")[1] == 1, "Uptime keeps the strict check"
-    assert smec.store.queue_count() == 1 and smec.store.oldest_queued()["signal"] == "uptime"
+    assert smec.store.history_page(signal="uptime", status="rejected")[1] == 1, "Uptime keeps the strict check, recorded as rejected"
+    assert smec.store.queue_count() == 0, "a backend refusal is never queued"
     srv.shutdown(); os.remove("test7.db")
     print("PASS: Count is 'sent' on HTTP 200 even if the body refuses it; other signals unchanged")
 

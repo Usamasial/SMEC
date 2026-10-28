@@ -280,6 +280,7 @@ main { padding: 28px; max-width: 1400px; margin: 0 auto; }
 .status-sent    { color: var(--good); font-weight: 600; }
 .status-queued  { color: var(--warn); font-weight: 600; }
 .status-failed  { color: var(--bad); font-weight: 600; }
+.status-rejected { color: var(--bad); font-weight: 600; }
 .status-sending { color: var(--text-dim); }
 
 .hint { color: var(--text-faint); font-size: 12.5px; margin-bottom: 16px; }

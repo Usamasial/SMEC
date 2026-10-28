@@ -479,6 +479,19 @@ def _accept(signal, ok, http_status):
         return ok
     return http_status is not None and 200 <= http_status < 300
 
+def _record_failure(station_code, signal, value, payload, url, msg_no, http_status, error):
+    """A reply with HTTP 2xx whose body refuses the message is a backend business
+    decision (e.g. "Machine Not Running"): re-sending the same message won't change it,
+    so it is marked 'rejected' and NOT queued. Only a real delivery failure (API
+    unreachable, timeout, non-2xx HTTP) goes to the retry queue."""
+    if http_status is not None and 200 <= http_status < 300:
+        store.update_history_status(msg_no, "rejected", http_status, error)
+        bus.publish("rejected", {"station": station_code, "signal": signal, "value": value, "error": error})
+    else:
+        store.update_history_status(msg_no, "queued", http_status, error)
+        store.enqueue(station_code, signal, payload, url, msg_no)
+        bus.publish("queued", {"station": station_code, "signal": signal, "value": value, "error": error})
+
 def send_signal(station_code, mc_no, signal, value):
     """Direct-send-first. On failure, drop into the retry queue -- msg_no and
     payload are fixed at this point so a retry re-sends the identical message."""
@@ -501,9 +514,7 @@ def send_signal(station_code, mc_no, signal, value):
         store.update_history_status(msg_no, "sent", http_status, error)
         bus.publish("sent", {"station": station_code, "signal": signal, "value": value})
     else:
-        store.update_history_status(msg_no, "queued", http_status, error)
-        store.enqueue(station_code, signal, payload, url, msg_no)
-        bus.publish("queued", {"station": station_code, "signal": signal, "value": value, "error": error})
+        _record_failure(station_code, signal, value, payload, url, msg_no, http_status, error)
 
 def send_production_stop(station_code, mc_no):
     """Per-machine 'production stopped' packet, sent once a station has shown no running
@@ -527,9 +538,7 @@ def send_production_stop(station_code, mc_no):
         store.update_history_status(msg_no, "sent", http_status)
         bus.publish("sent", {"station": station_code, "signal": "production_stop", "value": 0})
     else:
-        store.update_history_status(msg_no, "queued", http_status, error)
-        store.enqueue(station_code, "production_stop", payload, url, msg_no)
-        bus.publish("queued", {"station": station_code, "signal": "production_stop", "value": 0, "error": error})
+        _record_failure(station_code, "production_stop", 0, payload, url, msg_no, http_status, error)
 
 def retry_loop():
     """Same defensive wrapping as poll_forever -- an uncaught exception here must
