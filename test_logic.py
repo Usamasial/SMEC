@@ -380,19 +380,16 @@ def test_concurrent_db_access_does_not_crash():
 
     os.remove("test6.db")
 
-def test_count_held_until_production_registered():
-    """Count fires on the Start edge, but must NOT be sent until Production has been
-    sent and the backend settle time has passed (else the backend refuses it and it
-    shows as 'queued'). Once nothing is pending, Count goes out immediately."""
+def test_count_immediate_and_sent_on_http_200():
+    """Count goes out on the same poll as the Start edge (not held for Production), and an
+    HTTP 200 whose body says the backend refused it is still recorded as 'sent', not queued.
+    Other signals keep the strict wrapped-status check."""
+    import os
     sent = []
-    orig = (smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS,
-            smec.COUNT_AFTER_PRODUCTION_DELAY_SECONDS, smec.fins)
+    orig = (smec.send_signal, smec.fins)
     smec.send_signal = lambda code, mc, sig, val: sent.append((sig, val))
-    smec.PRODUCTION_SEND_DELAY_SECONDS = 0.2
-    smec.COUNT_AFTER_PRODUCTION_DELAY_SECONDS = 0.2
-    bits = {"start": True}
     class FakeFins:
-        def read_bit(self, w, b): return bits["start"] if (w, b) == (11, 6) else False
+        def read_bit(self, w, b): return (w, b) == (11, 6)
         def read_word(self, w): return 0
         def close(self): pass
     smec.fins = FakeFins()
@@ -401,23 +398,26 @@ def test_count_held_until_production_registered():
         rt = smec.StationRuntime(cfg, resume_reject=0)
         rt.count_pipe.last_edge_at = time.monotonic() - 1000
         smec.runtimes["STATION_5"] = rt
+        if os.path.exists("test7.db"): os.remove("test7.db")
         smec.store = smec.Store(__import__("pathlib").Path("test7.db"))
         smec.poll_station(cfg)
-        assert [x[0] for x in sent] == ["uptime"], f"Count must be held, got {sent}"
-        time.sleep(0.3)  # production sent, settle time not yet over
-        assert [x[0] for x in sent] == ["uptime", "production"], f"Count must still wait: {sent}"
-        time.sleep(0.3)
-        assert [x[0] for x in sent] == ["uptime", "production", "count"], f"order wrong: {sent}"
-        # nothing pending now -> next Count is immediate
-        rt.count_pipe.last_edge_at = time.monotonic() - 1000
-        bits["start"] = False; smec.poll_station(cfg)
-        bits["start"] = True; smec.poll_station(cfg)
-        assert sent[-1][0] == "count" and len(sent) == 4, sent
+        assert [x[0] for x in sent] == ["uptime", "count"], f"Count must be immediate: {sent}"
     finally:
-        (smec.send_signal, smec.PRODUCTION_SEND_DELAY_SECONDS,
-         smec.COUNT_AFTER_PRODUCTION_DELAY_SECONDS, smec.fins) = orig
-        import os; os.path.exists("test7.db") and os.remove("test7.db")
-    print("PASS: Count waits for Production + settle time, then is sent; later Counts are immediate")
+        smec.send_signal, smec.fins = orig
+    print("PASS: Count is sent immediately, not held for Production")
+
+    srv = http.server.HTTPServer(("127.0.0.1", 8768), WrappedHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    smec.ENDPOINTS["count"] = "http://127.0.0.1:8768/api/machine_count"
+    smec.ENDPOINTS["uptime"] = "http://127.0.0.1:8768/api/machine_up_time"
+    WrappedHandler.reply_status = "500"   # HTTP 200, body says refused
+    smec.send_signal("STATION_5", "STATION_5", "count", 1)
+    smec.send_signal("STATION_5", "STATION_5", "uptime", 1)
+    assert smec.store.history_page(signal="count", status="sent")[1] == 1, "Count must be 'sent' on HTTP 200"
+    assert smec.store.history_page(signal="uptime", status="queued")[1] == 1, "Uptime keeps the strict check"
+    assert smec.store.queue_count() == 1 and smec.store.oldest_queued()["signal"] == "uptime"
+    srv.shutdown(); os.remove("test7.db")
+    print("PASS: Count is 'sent' on HTTP 200 even if the body refuses it; other signals unchanged")
 
 def test_line_idle_watchdog_and_packet():
     """No station signal for LINE_IDLE_SECONDS -> one prodStatus=0 packet for mc_no SMEC,
@@ -472,6 +472,6 @@ if __name__ == "__main__":
     test_production_internal_only_and_count_independent()
     test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
-    test_count_held_until_production_registered()
+    test_count_immediate_and_sent_on_http_200()
     test_line_idle_watchdog_and_packet()
     print("\nALL TESTS PASSED")

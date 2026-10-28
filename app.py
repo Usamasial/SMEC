@@ -67,12 +67,10 @@ HTTP_TIMEOUT = 5
 # accept Count for the same station -- 2s was tried on-site and wasn't enough
 # (confirmed by exact timestamps in real logs), 5s has real margin.
 PRODUCTION_SEND_DELAY_SECONDS = 5.0
-# Count fires on the same Start edge as Uptime, but the backend REFUSES a Count until
-# Production is registered ("Machine Currently Not Running In Production"), and a
-# refused Count shows up as 'queued'. To make Count arrive as 'sent'/200 on the first
-# try, it is held until Production has been sent PLUS this settle time, which gives
-# the backend time to register Production. Tune this if Counts are still refused.
-COUNT_AFTER_PRODUCTION_DELAY_SECONDS = 3.0
+# Count is released IMMEDIATELY on the Start edge and is judged by the HTTP status
+# alone (see COUNT_SENT_ON_HTTP_200). The backend's own "Not Running In Production"
+# business rule is NOT treated as a failure for Count and does not queue it.
+COUNT_SENT_ON_HTTP_200 = True
 # -- Line-level idle watchdog. If NO station shows a running signal (Start/Sensor 2)
 # for LINE_IDLE_SECONDS, send one "production stopped" packet for the whole line
 # (mc_no "SMEC", prodStatus 0) to the production endpoint. Sent once per idle
@@ -480,6 +478,14 @@ def _check_response(r: requests.Response):
         return wrapped_ok, detail
     return http_ok, (None if http_ok else r.text[:300])
 
+def _accept(signal, ok, http_status):
+    """Count is 'sent' on any HTTP 2xx even if the backend's wrapped body says it
+    refused it (the error text is still kept in history). Everything else follows
+    the normal wrapped-status check. Network errors / non-2xx still queue."""
+    if ok or signal != "count" or not COUNT_SENT_ON_HTTP_200:
+        return ok
+    return http_status is not None and 200 <= http_status < 300
+
 def send_signal(station_code, mc_no, signal, value):
     """Direct-send-first. On failure, drop into the retry queue -- msg_no and
     payload are fixed at this point so a retry re-sends the identical message."""
@@ -497,8 +503,9 @@ def send_signal(station_code, mc_no, signal, value):
         http_status = r.status_code
     except requests.RequestException as e:
         ok, http_status, error = False, None, str(e)[:300]
+    ok = _accept(signal, ok, http_status)
     if ok:
-        store.update_history_status(msg_no, "sent", http_status)
+        store.update_history_status(msg_no, "sent", http_status, error)
         bus.publish("sent", {"station": station_code, "signal": signal, "value": value})
     else:
         store.update_history_status(msg_no, "queued", http_status, error)
@@ -565,9 +572,10 @@ def retry_loop():
                     http_status = r.status_code
                 except requests.RequestException as e:
                     ok, http_status, error = False, None, str(e)[:300]
+                ok = _accept(row["signal"], ok, http_status)
                 if ok:
                     store.dequeue(row["id"])
-                    store.update_history_status(row["msg_no"], "sent", http_status)
+                    store.update_history_status(row["msg_no"], "sent", http_status, error)
                     bus.publish("sent", {"station": row["station_code"], "signal": row["signal"]})
                 elif row["attempts"] + 1 >= rel["max_retry_attempts"]:
                     store.dequeue(row["id"])
@@ -647,11 +655,6 @@ class StationRuntime:
         self.prod_pipe = EdgePipeline()
         self.prod_pipe.value = 1 if resume_prod else 0
         self.count_pipe = CountPipeline() if cfg["has_count"] else None
-        # While a Production=1 send (plus settle time) is pending, Counts wait here
-        # instead of being sent too early -- see COUNT_AFTER_PRODUCTION_DELAY_SECONDS.
-        self.prod_lock = threading.Lock()
-        self.count_blocked = False
-        self.deferred_counts = []
         # Reject mirrors a DM word (D272) directly -- not a bit, so no CountPipeline.
         self.last_reject_value = resume_reject if (cfg["has_reject"] and cfg["reject"]) else None
 
@@ -688,24 +691,6 @@ runtimes = {s["code"]: StationRuntime(s,
 # ==================================================================== POLLING LOOP
 _next_due: dict = {s["code"]: 0.0 for s in STATIONS}  # monotonic time each station is next due
 
-def _release_deferred_counts(rt, code, mc_no):
-    with rt.prod_lock:
-        rt.count_blocked = False
-        held, rt.deferred_counts = rt.deferred_counts, []
-    for total in held:
-        send_signal(code, mc_no, "count", total)
-
-def send_production_then_release_counts(rt, code, mc_no, value):
-    """Timer target: send Production, then after the backend settle time release the
-    Counts that were held back. Always releases, even if the send raised, so a Count
-    can never be stuck waiting forever."""
-    try:
-        send_signal(code, mc_no, "production", value)
-    except Exception as e:
-        log.error("production send error for %s (continuing): %s", code, e)
-    threading.Timer(COUNT_AFTER_PRODUCTION_DELAY_SECONDS, _release_deferred_counts,
-                    args=(rt, code, mc_no)).start()
-
 def poll_station(s):
     code, mc_no = s["code"], s["mc_no"]
     rt = runtimes[code]
@@ -735,27 +720,13 @@ def poll_station(s):
     # the same reason (their backend needs time to register Uptime first).
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
     if pchanged:
-        if pv == 1 and rt.count_pipe:
-            with rt.prod_lock:
-                rt.count_blocked = True
-            threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_production_then_release_counts,
-                            args=(rt, code, mc_no, pv)).start()
-        else:
-            threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", pv)).start()
+        threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", pv)).start()
 
-    # Count: only Station 5 -- Start bit rising edge = one finished unit. The
-    # backend refuses Count until Production is registered, and Count fires on the
-    # same edge that triggers the (delayed) Production send. So if a Production=1
-    # send is pending, hold the Count and send it right after Production + settle
-    # time (send_production_then_release_counts); otherwise send it immediately.
+    # Count: only Station 5 -- Start bit rising edge = one finished unit. Sent
+    # immediately, never held for Production.
     if rt.count_pipe and rt.count_pipe.feed(start_raw):
         total = store.bump_total(code, "count")
-        with rt.prod_lock:
-            hold = rt.count_blocked
-            if hold:
-                rt.deferred_counts.append(total)
-        if not hold:
-            send_signal(code, mc_no, "count", total)
+        send_signal(code, mc_no, "count", total)
 
     # Reject: only Station 5. D272 is a DM WORD holding the PLC's own running
     # NG/reject count (TOGO_DisplayValue_Judgment_NG) -- confirmed directly in
