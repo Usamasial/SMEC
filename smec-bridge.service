@@ -1,0 +1,15 @@
+[Unit]
+Description=SMEC Line Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/smec_bridge
+ExecStart=/opt/smec_bridge/venv/bin/python /opt/smec_bridge/app.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

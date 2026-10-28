@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SMEC Line Bridge</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-title">
+      <h1>SMEC Line Bridge</h1>
+      <span class="subtitle">Cover Casing Assembly &amp; Engraving Line — 5 Stations</span>
+    </div>
+    <div class="topbar-status">
+      <span id="plcChip" class="chip chip-unknown">PLC: checking...</span>
+      <span id="queueChip" class="chip chip-unknown">Queue: --</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="history">History</button>
+    <button class="tab-btn" data-tab="queue">Retry Queue</button>
+    <button class="tab-btn" data-tab="connection">Connection Info</button>
+  </nav>
+
+  <main>
+    <section id="tab-dashboard" class="tab-panel active">
+      <div id="flowStrip" class="flow-strip"></div>
+      <div id="stationGrid" class="station-grid"></div>
+    </section>
+
+    <section id="tab-history" class="tab-panel">
+      <div class="filters">
+        <select id="histStation"><option value="">All stations</option></select>
+        <select id="histSignal">
+          <option value="">All signals</option>
+          <option value="uptime">Uptime</option>
+          <option value="count">Count</option>
+          <option value="reject">Reject</option>
+        </select>
+        <select id="histStatus">
+          <option value="">All statuses</option>
+          <option value="sent">Sent</option>
+          <option value="queued">Queued</option>
+          <option value="failed">Failed</option>
+        </select>
+        <button onclick="loadHistory()">Refresh</button>
+      </div>
+      <table class="data-table">
+        <thead><tr>
+          <th>Time</th><th>Station</th><th>Signal</th><th>Value</th><th>mc_no</th>
+          <th>msg_no</th><th>Status</th><th>HTTP</th><th>Error</th>
+        </tr></thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+      <div id="historyPager" class="pager"></div>
+    </section>
+
+    <section id="tab-queue" class="tab-panel">
+      <p class="hint">Items waiting to be resent because the API did not respond successfully.</p>
+      <table class="data-table">
+        <thead><tr><th>Queued At</th><th>Station</th><th>Signal</th><th>msg_no</th><th>Attempts</th></tr></thead>
+        <tbody id="queueBody"></tbody>
+      </table>
+    </section>
+
+    <section id="tab-connection" class="tab-panel">
+      <p class="hint">PLC connection and API endpoints reflect real wiring, shown for reference only.
+        Reliability settings and each station's poll interval are editable and apply immediately -- no restart needed.</p>
+
+      <div class="info-section">
+        <h2>Input Connection (PLC) <span class="readonly-note">READ ONLY</span></h2>
+        <div class="kv-grid" id="inputConnGrid"></div>
+      </div>
+
+      <div class="info-section">
+        <h2>Reliability Settings <span class="editable-note">EDITABLE</span></h2>
+        <div class="edit-grid" id="reliabilityGrid"></div>
+        <div class="save-row">
+          <button onclick="saveReliability()">Save</button>
+          <span id="reliabilitySaveMsg" class="save-msg"></span>
+        </div>
+      </div>
+
+      <div class="info-section">
+        <h2>Outbound APIs <span class="readonly-note">READ ONLY</span></h2>
+        <table class="data-table">
+          <thead><tr><th>Signal</th><th>URL</th><th>package_no</th><th>Status</th></tr></thead>
+          <tbody id="outboundBody"></tbody>
+        </table>
+      </div>
+
+      <div class="info-section">
+        <h2>Station Addresses &amp; Polling</h2>
+        <table class="data-table">
+          <thead><tr><th>Station</th><th>mc_no</th><th>Start</th><th>Sensor2</th><th>Stop</th><th>Reject</th>
+            <th>Poll Interval (s) <span class="editable-note">EDITABLE</span></th><th></th></tr></thead>
+          <tbody id="stationConfigBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

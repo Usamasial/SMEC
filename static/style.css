@@ -1,0 +1,331 @@
+/* ============================================================
+   SMEC Line Bridge -- industrial control-panel design system
+   Grounded in the real subject: a 5-station assembly + laser-
+   engraving line, read at a glance like a factory-floor andon
+   board. Signal colors follow real machine-status convention
+   (green=running, red=down, amber=pending), and counters use
+   tabular monospace figures like a physical digital readout.
+   ============================================================ */
+
+:root {
+  --bg:         #0B0E14;
+  --panel:      #131822;
+  --panel-2:    #1A2130;
+  --border:     #232B3A;
+  --border-2:   #2E3849;
+  --text:       #E8ECF2;
+  --text-dim:   #8792A3;
+  --text-faint: #57616F;
+
+  --accent:     #4FA3D1;
+  --accent-dim: #366685;
+
+  --good:       #2FB673;
+  --good-dim:   #163B2A;
+  --bad:        #E5484D;
+  --bad-dim:    #3D1A1C;
+  --warn:       #D9A62E;
+  --warn-dim:   #3A2F10;
+
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", monospace;
+  --sans: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  background:
+    radial-gradient(1200px 500px at 15% -10%, rgba(79,163,209,0.06), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Top bar ---------- */
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 28px;
+  background: linear-gradient(180deg, #10141C 0%, #0D1119 100%);
+  border-bottom: 1px solid var(--border);
+}
+.topbar-title { display: flex; flex-direction: column; gap: 2px; }
+.topbar h1 {
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
+  margin: 0;
+  color: var(--text);
+}
+.topbar .subtitle {
+  font-size: 12px;
+  color: var(--text-faint);
+  letter-spacing: 0.2px;
+}
+.topbar-status { display: flex; gap: 10px; align-items: center; }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  font-family: var(--mono);
+  letter-spacing: 0.2px;
+}
+.chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip-ok       { background: var(--good-dim); color: var(--good); border-color: rgba(47,182,115,0.25); }
+.chip-bad      { background: var(--bad-dim);  color: var(--bad);  border-color: rgba(229,72,77,0.25); }
+.chip-unknown  { background: var(--panel-2);  color: var(--text-dim); border-color: var(--border-2); }
+
+/* ---------- Tabs ---------- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 28px;
+  background: #0D1119;
+  border-bottom: 1px solid var(--border);
+}
+.tab-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  padding: 13px 16px;
+  cursor: pointer;
+  font-size: 13.5px;
+  font-family: var(--sans);
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s ease;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 650; }
+
+main { padding: 28px; max-width: 1400px; margin: 0 auto; }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ---------- Process flow strip ---------- */
+.flow-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 24px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.flow-step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  position: relative;
+  min-width: 0;
+}
+.flow-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 60%;
+  background: var(--border-2);
+}
+.flow-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.flow-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-faint);
+  box-shadow: none;
+}
+.flow-dot.on {
+  background: var(--good);
+  box-shadow: 0 0 0 3px rgba(47,182,115,0.18);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+.flow-dot.off { background: var(--bad); }
+.flow-label { min-width: 0; }
+.flow-label .name { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flow-label .task { font-size: 10.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@keyframes pulse-dot {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(47,182,115,0.18); }
+  50%      { box-shadow: 0 0 0 6px rgba(47,182,115,0.08); }
+}
+
+/* ---------- Station cards ---------- */
+.station-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+}
+.station-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-2);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  transition: border-left-color 0.3s ease;
+}
+.station-card.st-on  { border-left-color: var(--good); }
+.station-card.st-off { border-left-color: var(--bad); }
+
+.station-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+.station-card h3 { margin: 0; font-size: 14.5px; font-weight: 650; color: var(--text); letter-spacing: 0.2px; }
+.station-num { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.station-card .label { color: var(--text-faint); font-size: 12px; margin-bottom: 16px; }
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  margin-bottom: 14px;
+}
+.status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.status-dot.on  { background: var(--good); box-shadow: 0 0 0 4px rgba(47,182,115,0.16); animation: pulse-dot 2s ease-in-out infinite; }
+.status-dot.off { background: var(--bad);  box-shadow: 0 0 0 4px rgba(229,72,77,0.14); }
+.status-text { font-size: 15px; font-weight: 700; letter-spacing: 0.3px; font-family: var(--mono); }
+.status-text.on  { color: var(--good); }
+.status-text.off { color: var(--bad); }
+
+.station-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.metric {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 11px;
+}
+.metric .k { font-size: 10.5px; color: var(--text-faint); margin-bottom: 3px; letter-spacing: 0.2px; }
+.metric .v { font-size: 14px; font-weight: 600; color: var(--text); font-family: var(--mono); }
+.v.on   { color: var(--good); }
+.v.off  { color: var(--bad); }
+.v.na   { color: var(--text-dim); }
+
+/* Output section -- only Station 5 has this, visually distinct since it's the
+   only station producing measurable output (final step of the line). */
+.output-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border-2);
+}
+.output-section .section-label {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+  letter-spacing: 0.4px;
+}
+.output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.output-tile {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  text-align: center;
+}
+.output-tile .num {
+  font-family: var(--mono);
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--text);
+}
+.output-tile.reject .num { color: var(--warn); }
+.output-tile .lbl { font-size: 10.5px; color: var(--text-faint); margin-top: 6px; letter-spacing: 0.3px; }
+
+/* ---------- Filters / buttons ---------- */
+.filters { display: flex; gap: 10px; margin-bottom: 14px; }
+.filters select, .filters button, .pager button, .row-save-btn, .save-row button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-family: var(--sans);
+}
+.filters button, .pager button, .row-save-btn { cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; }
+.filters button:hover, .pager button:hover, .row-save-btn:hover { background: #212939; border-color: var(--accent-dim); }
+.save-row button { background: var(--accent-dim); border-color: var(--accent); color: #EAF4FB; cursor: pointer; font-weight: 600; }
+.save-row button:hover { background: var(--accent); }
+
+/* ---------- Tables ---------- */
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.data-table th, .data-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.data-table th { color: var(--text-faint); font-weight: 600; font-size: 11.5px; letter-spacing: 0.3px; background: var(--panel-2); }
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr:hover { background: rgba(255,255,255,0.015); }
+
+.status-sent    { color: var(--good); font-weight: 600; }
+.status-queued  { color: var(--warn); font-weight: 600; }
+.status-failed  { color: var(--bad); font-weight: 600; }
+.status-sending { color: var(--text-dim); }
+
+.hint { color: var(--text-faint); font-size: 12.5px; margin-bottom: 16px; }
+.pager { margin-top: 12px; display: flex; gap: 10px; align-items: center; font-size: 13px; color: var(--text-dim); }
+.pager button:disabled { opacity: 0.35; cursor: default; }
+
+/* ---------- Connection Info ---------- */
+.info-section { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; }
+.info-section h2 { font-size: 13.5px; margin: 0 0 14px; color: var(--text); font-weight: 650; }
+.readonly-note, .editable-note {
+  display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 999px;
+  margin-left: 8px; font-weight: 700; letter-spacing: 0.3px; vertical-align: middle;
+}
+.readonly-note { background: var(--panel-2); color: var(--text-faint); border: 1px solid var(--border-2); }
+.editable-note { background: var(--accent-dim); color: #CFE9F7; border: 1px solid var(--accent); }
+
+.kv-grid, .edit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.kv-item .k, .edit-item .k { font-size: 10.5px; color: var(--text-faint); margin-bottom: 4px; }
+.kv-item .v { font-size: 13.5px; font-weight: 600; color: var(--text); font-family: var(--mono); }
+.edit-item input {
+  width: 100%; margin-top: 2px; padding: 7px 9px; border: 1px solid var(--border-2);
+  border-radius: var(--radius-sm); font-family: var(--mono); font-size: 13px;
+  background: var(--panel-2); color: var(--text);
+}
+.edit-item input:focus, .poll-input:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+.save-row { margin-top: 14px; display: flex; align-items: center; gap: 10px; }
+.save-msg { font-size: 12px; }
+.save-msg.ok  { color: var(--good); }
+.save-msg.err { color: var(--bad); }
+.poll-input {
+  width: 84px; padding: 6px 9px; border: 1px solid var(--border-2); border-radius: var(--radius-sm);
+  font-family: var(--mono); background: var(--panel-2); color: var(--text);
+}
+.badge-confirmed, .badge-assumed {
+  padding: 2px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.2px;
+}
+.badge-confirmed { background: var(--good-dim); color: var(--good); }
+.badge-assumed   { background: var(--warn-dim); color: var(--warn); }
+
+@media (prefers-reduced-motion: reduce) {
+  .flow-dot.on, .status-dot.on { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .flow-strip { flex-direction: column; }
+  .flow-step:not(:last-child)::after { display: none; }
+  main { padding: 16px; }
+  .topbar { padding: 14px 16px; }
+}
