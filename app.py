@@ -665,6 +665,16 @@ runtimes = {s["code"]: StationRuntime(s,
 # ==================================================================== POLLING LOOP
 _next_due: dict = {s["code"]: 0.0 for s in STATIONS}  # monotonic time each station is next due
 
+def send_stop_sequence(code, mc_no, also_uptime):
+    """Production stop packet first, then (after the backend settle delay) Uptime 0."""
+    try:
+        send_production_stop(code, mc_no)
+    except Exception as e:
+        log.error("production stop error for %s (continuing): %s", code, e)
+    if also_uptime:
+        time.sleep(PRODUCTION_SEND_DELAY_SECONDS)
+        send_signal(code, mc_no, "uptime", 0)
+
 def poll_station(s):
     code, mc_no = s["code"], s["mc_no"]
     rt = runtimes[code]
@@ -683,26 +693,29 @@ def poll_station(s):
     # (only Station 1 -- either bit firing counts as "running", per the client's PDF).
     effective_trigger = start_raw or sensor2_raw
     uv, uchanged = rt.uptime_pipe.feed(effective_trigger)
-    if uchanged:
-        send_signal(code, mc_no, "uptime", uv)
-
-    # Production -- sent internally only, NOT surfaced anywhere in the UI. Exists
-    # purely to satisfy the backend's requirement that Production be registered
-    # before it will accept Count for the same station. Delayed after Uptime for
-    # the same reason (their backend needs time to register Uptime first).
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
-    if pchanged:
-        if pv == 1:
-            threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", pv)).start()
-        else:
-            # No running signal for DOWNTIME_GRACE_SECONDS -> per-machine stop packet.
-            threading.Thread(target=send_production_stop, args=(code, mc_no), daemon=True).start()
+
+    # START: Uptime first, Production PRODUCTION_SEND_DELAY_SECONDS later (the backend
+    # needs Uptime registered before it accepts Production). Production is not shown
+    # in the UI; it exists because the backend requires it before it accepts Count.
+    if uchanged and uv == 1:
+        send_signal(code, mc_no, "uptime", 1)
+    if pchanged and pv == 1:
+        threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", 1)).start()
+
+    # STOP: the mirror image. The backend refuses the Production stop packet with "Can't
+    # Start Production, Machine Not Running!" once the machine's Uptime is already 0, so
+    # the stop packet goes FIRST and Uptime 0 follows PRODUCTION_SEND_DELAY_SECONDS later.
+    if pchanged and pv == 0:
+        threading.Thread(target=send_stop_sequence, args=(code, mc_no, uchanged and uv == 0), daemon=True).start()
+    elif uchanged and uv == 0:
+        send_signal(code, mc_no, "uptime", 0)
 
     # Count: only Station 5 -- Start bit rising edge = one finished unit. Sent
     # immediately, never held for Production.
     if rt.count_pipe and rt.count_pipe.feed(start_raw):
-        total = store.bump_total(code, "count")
-        send_signal(code, mc_no, "count", total)
+        store.bump_total(code, "count")   # running total stays local, for the dashboard
+        send_signal(code, mc_no, "count", 1)  # the API always receives 1 per finished unit
 
     # Reject: only Station 5. D272 is a DM WORD holding the PLC's own running
     # NG/reject count (TOGO_DisplayValue_Judgment_NG) -- confirmed directly in

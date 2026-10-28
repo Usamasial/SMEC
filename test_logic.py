@@ -419,6 +419,46 @@ def test_count_immediate_and_sent_on_http_200():
     srv.shutdown(); os.remove("test7.db")
     print("PASS: Count is 'sent' on HTTP 200 even if the body refuses it; other signals unchanged")
 
+def test_stop_order_production_then_uptime_and_count_is_one():
+    """Stop: production stop packet must go BEFORE Uptime 0 (backend refuses it once the
+    machine is already stopped). Count: the API always gets 1, not the running total."""
+    order = []
+    orig = (smec.send_signal, smec.send_production_stop, smec.fins,
+            smec.DOWNTIME_GRACE_SECONDS, smec.PRODUCTION_SEND_DELAY_SECONDS)
+    smec.send_signal = lambda code, mc, sig, val: order.append((sig, val))
+    smec.send_production_stop = lambda code, mc: order.append(("production_stop", 0))
+    smec.DOWNTIME_GRACE_SECONDS = 0.1
+    smec.PRODUCTION_SEND_DELAY_SECONDS = 0.1
+    bits = {"start": True}
+    class FakeFins:
+        def read_bit(self, w, b): return bits["start"] if (w, b) == (11, 6) else False
+        def read_word(self, w): return 0
+        def close(self): pass
+    smec.fins = FakeFins()
+    import os
+    if os.path.exists("test9.db"): os.remove("test9.db")
+    smec.store = smec.Store(__import__("pathlib").Path("test9.db"))
+    try:
+        cfg = smec.STATIONS_BY_CODE["STATION_5"]
+        rt = smec.StationRuntime(cfg, resume_reject=0)
+        rt.count_pipe.last_edge_at = time.monotonic() - 1000
+        smec.runtimes["STATION_5"] = rt
+        smec.store.set_total("STATION_5", "count", 8)   # running total already 8
+        smec.poll_station(cfg)
+        assert ("count", 1) in order and ("count", 9) not in order, order
+        assert smec.store.get_total("STATION_5", "count") == 9, "local total still increments"
+        time.sleep(0.3)   # let the delayed start-up Production send land first
+        order.clear()
+        bits["start"] = False
+        smec.poll_station(cfg); time.sleep(0.2); smec.poll_station(cfg); time.sleep(0.4)
+        names = [x[0] for x in order]
+        assert names == ["production_stop", "uptime"] and order[1] == ("uptime", 0), names
+    finally:
+        (smec.send_signal, smec.send_production_stop, smec.fins,
+         smec.DOWNTIME_GRACE_SECONDS, smec.PRODUCTION_SEND_DELAY_SECONDS) = orig
+        os.path.exists("test9.db") and os.remove("test9.db")
+    print("PASS: stop sends production_stop before Uptime 0; Count always sent as 1")
+
 def test_production_stop_packet_per_station():
     """After DOWNTIME_GRACE_SECONDS with no running signal, the station sends the developer's
     exact stop packet (its own mc_no, prodStatus 0, DD-MM-YYYY, no package_no/msg_no)."""
@@ -479,5 +519,6 @@ if __name__ == "__main__":
     test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
     test_count_immediate_and_sent_on_http_200()
+    test_stop_order_production_then_uptime_and_count_is_one()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")
