@@ -44,32 +44,16 @@ def test_edge_pipeline():
     assert (v, changed) == (0, True), f"expected downtime after grace, got {v},{changed}"
     print("PASS: EdgePipeline handles rising edge, blips, and real downtime correctly")
 
-def test_count_pipeline():
-    smec.COUNT_DEBOUNCE_SECONDS = 0.2  # shrink for fast test -- real value is 60s
-    p = smec.CountPipeline()
-    assert p.feed(True) is True       # first rising edge counts
-    assert p.feed(True) is False      # still 1, no new edge
-    assert p.feed(False) is False     # falling edge, not a count
-    assert p.feed(True) is False      # too soon after last edge (debounce)
+def test_jig_pipeline():
+    p = smec.JigPipeline(debounce=0.2)
+    assert p.edge(True) is True        # first JIG
+    assert p.edge(True) is False       # still the same JIG (bit held high)
+    assert p.edge(False) is False
+    assert p.edge(True) is False       # flicker inside the debounce window = same JIG
     time.sleep(0.25)
-    p.feed(False)
-    assert p.feed(True) is True       # new genuine edge after debounce window
-    print("PASS: CountPipeline debounces bouncing signals, counts real pulses")
-
-def test_count_debounce_matches_bug_scenario():
-    """Reproduces the exact bug reported: a Start bit that keeps pulsing ON/OFF
-    every second (bouncing/heartbeat at the PLC level) must NOT be counted as
-    a new unit each time -- only genuinely separated pulses should count."""
-    smec.COUNT_DEBOUNCE_SECONDS = 60.0  # the real, deployed value
-    p = smec.CountPipeline()
-    p.last_edge_at = time.monotonic() - 1000  # guarantee the first edge isn't itself debounced
-    fires = 0
-    for _ in range(10):  # simulate ~10 seconds of a bit pulsing on/off every ~1s
-        if p.feed(True):
-            fires += 1
-        p.feed(False)
-    assert fires == 1, f"a bit bouncing every second for 10s should count ONCE, counted {fires} times"
-    print("PASS: a Start bit pulsing every second for 10s only counts once (matches the real 60s rate limit)")
+    p.edge(False)
+    assert p.edge(True) is True        # next JIG
+    print("PASS: JigPipeline counts one JIG per rising edge and ignores flicker")
 
 # ---------------------------------------------------------------- 3. Outbound send + retry queue
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -295,12 +279,10 @@ def test_production_internal_only_and_count_independent():
         f"Production must not appear in the outward-facing outbound_apis list, got {signals_shown}"
     print("PASS: Production does not appear in /api/config's outbound_apis list (stays internal-only)")
 
-    # Count must fire from a bare Start-bit edge with zero reference to production anywhere
-    cfg = smec.STATIONS_BY_CODE["STATION_5"]
-    rt = smec.StationRuntime(cfg)
-    rt.count_pipe.last_edge_at = time.monotonic() - 1000  # guarantee first edge isn't itself debounced
-    assert rt.count_pipe.feed(True) is True, "Count must fire directly off Start, independent of anything else"
-    print("PASS: Count fires directly from the Start bit, with no production dependency")
+    # Count is driven only by JIGs at Station 5 -- no reference to production anywhere
+    rt = smec.StationRuntime(smec.STATIONS_BY_CODE["STATION_5"])
+    assert rt.cfg["has_count"] and rt.jig.edge(True) is True
+    print("PASS: Count is driven by the JIG edge, with no production dependency")
 
 def test_station1_sensor2_or_logic():
     """Reproduces the fix from the PDF re-check: Station 1's Uptime must fire on
@@ -397,7 +379,6 @@ def test_count_immediate_and_sent_on_http_200():
     try:
         cfg = smec.STATIONS_BY_CODE["STATION_5"]
         rt = smec.StationRuntime(cfg, resume_reject=0)
-        rt.count_pipe.last_edge_at = time.monotonic() - 1000
         smec.runtimes["STATION_5"] = rt
         if os.path.exists("test7.db"): os.remove("test7.db")
         smec.store = smec.Store(__import__("pathlib").Path("test7.db"))
@@ -442,7 +423,6 @@ def test_stop_order_production_then_uptime_and_count_is_one():
     try:
         cfg = smec.STATIONS_BY_CODE["STATION_5"]
         rt = smec.StationRuntime(cfg, resume_reject=0)
-        rt.count_pipe.last_edge_at = time.monotonic() - 1000
         smec.runtimes["STATION_5"] = rt
         smec.store.set_total("STATION_5", "count", 8)   # running total already 8
         smec.poll_station(cfg)
@@ -459,6 +439,92 @@ def test_stop_order_production_then_uptime_and_count_is_one():
          smec.DOWNTIME_GRACE_SECONDS, smec.PRODUCTION_SEND_DELAY_SECONDS) = orig
         os.path.exists("test9.db") and os.remove("test9.db")
     print("PASS: stop sends production_stop before Uptime 0; Count always sent as 1")
+
+def _jig_harness(code, bit_map):
+    """Runs poll_station for `code` with fake PLC bits; returns (cfg, rt, sent, bits, restore)."""
+    import os
+    sent = []
+    orig = (smec.send_signal, smec.send_production_stop, smec.fins, smec.DOWNTIME_GRACE_SECONDS,
+            smec.PRODUCTION_SEND_DELAY_SECONDS)
+    smec.send_signal = lambda c, mc, sig, val: sent.append((c, sig, val))
+    smec.send_production_stop = lambda c, mc: sent.append((c, "production_stop", 0))
+    smec.PRODUCTION_SEND_DELAY_SECONDS = 0.05
+    bits = {k: False for k in bit_map.values()}
+    class FakeFins:
+        def read_bit(self, w, b): return bits.get((w, b), False)
+        def read_word(self, w): return 0
+        def close(self): pass
+    smec.fins = FakeFins()
+    if os.path.exists("testj.db"): os.remove("testj.db")
+    smec.store = smec.Store(__import__("pathlib").Path("testj.db"))
+    cfg = smec.STATIONS_BY_CODE[code]
+    rt = smec.StationRuntime(cfg, resume_reject=0)
+    smec.runtimes[code] = rt
+    def restore():
+        (smec.send_signal, smec.send_production_stop, smec.fins, smec.DOWNTIME_GRACE_SECONDS,
+         smec.PRODUCTION_SEND_DELAY_SECONDS) = orig
+        os.path.exists("testj.db") and os.remove("testj.db")
+    return cfg, rt, sent, bits, restore
+
+def test_multiple_jigs_uptime_1_2_3_and_reset():
+    """Station down -> first JIG = Uptime 1; already up -> next JIGs = 2, 3; after the
+    station goes down (no signal for the grace time) the number resets to 1."""
+    cfg, rt, sent, bits, restore = _jig_harness("STATION_3", {"start": (11, 0)})
+    try:
+        smec.DOWNTIME_GRACE_SECONDS = 0.3
+        rt.jig.debounce = 0.05
+        for _ in range(3):
+            bits[(11, 0)] = True;  smec.poll_station(cfg); time.sleep(0.1)
+            bits[(11, 0)] = False; smec.poll_station(cfg); time.sleep(0.1)
+        ups = [v for (_, sig, v) in sent if sig == "uptime"]
+        assert ups == [1, 2, 3], f"expected Uptime 1,2,3 for 3 JIGs, got {ups}"
+        # station goes quiet past the grace time -> stop sequence, number resets
+        time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.3)
+        allv = [(sig, v) for (_, sig, v) in sent]
+        names = allv[allv.index(("uptime", 3)) + 1:]
+        names = [n for n in names if n[0] != "production"]
+        assert names == [("production_stop", 0), ("uptime", 0)], names
+        assert rt.jig.count == 0
+        sent.clear()
+        bits[(11, 0)] = True; smec.poll_station(cfg)
+        assert [(sig, v) for (_, sig, v) in sent] == [("uptime", 1)], "first JIG after down must be Uptime 1 again"
+    finally:
+        restore()
+    print("PASS: JIGs send Uptime 1, 2, 3 while up, and restart at 1 after the station goes down")
+
+def test_station1_two_sensors_count_one_jig_once():
+    """A JIG that trips Start then Sensor 2 (or both) is ONE JIG at Station 1."""
+    cfg, rt, sent, bits, restore = _jig_harness("STATION_1", {"start": (11, 11), "s2": (11, 12)})
+    try:
+        rt.jig.debounce = 0.3
+        bits[(11, 11)] = True;  smec.poll_station(cfg)            # JIG 1 trips Start
+        time.sleep(0.05)
+        bits[(11, 11)] = False; bits[(11, 12)] = True; smec.poll_station(cfg)   # then Sensor 2
+        time.sleep(0.05)
+        bits[(11, 12)] = False; smec.poll_station(cfg)
+        assert [v for (_, sig, v) in sent if sig == "uptime"] == [1], sent
+        time.sleep(0.4)                                            # JIG 2, well after
+        bits[(11, 11)] = True;  smec.poll_station(cfg)
+        assert [v for (_, sig, v) in sent if sig == "uptime"] == [1, 2], sent
+    finally:
+        restore()
+    print("PASS: Station 1 counts a JIG tripping both sensors once")
+
+def test_station5_count_per_jig():
+    """Station 5: every JIG sends Count 1 (not just one per minute), alongside Uptime n."""
+    cfg, rt, sent, bits, restore = _jig_harness("STATION_5", {"start": (11, 6)})
+    try:
+        rt.jig.debounce = 0.05
+        for _ in range(3):
+            bits[(11, 6)] = True;  smec.poll_station(cfg); time.sleep(0.1)
+            bits[(11, 6)] = False; smec.poll_station(cfg); time.sleep(0.1)
+        counts = [v for (_, sig, v) in sent if sig == "count"]
+        ups = [v for (_, sig, v) in sent if sig == "uptime"]
+        assert counts == [1, 1, 1] and ups == [1, 2, 3], (counts, ups)
+        assert smec.store.get_total("STATION_5", "count") == 3
+    finally:
+        restore()
+    print("PASS: Station 5 sends Count 1 for every JIG")
 
 def test_clear_history():
     import os
@@ -521,8 +587,7 @@ def test_production_stop_packet_per_station():
 if __name__ == "__main__":
     test_fins_frame()
     test_edge_pipeline()
-    test_count_pipeline()
-    test_count_debounce_matches_bug_scenario()
+    test_jig_pipeline()
     test_send_and_retry()
     test_wrapped_response_status()
     test_daily_seq_reset()
@@ -534,6 +599,9 @@ if __name__ == "__main__":
     test_concurrent_db_access_does_not_crash()
     test_count_immediate_and_sent_on_http_200()
     test_stop_order_production_then_uptime_and_count_is_one()
+    test_multiple_jigs_uptime_1_2_3_and_reset()
+    test_station1_two_sensors_count_one_jig_once()
+    test_station5_count_per_jig()
     test_clear_history()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")

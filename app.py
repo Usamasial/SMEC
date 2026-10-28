@@ -39,11 +39,11 @@ FINS_SA1 = 4      # source node (this app)
 FINS_TIMEOUT = 0.5
 DOWNTIME_GRACE_SECONDS = 180  # 3 minutes -- matches Node-RED's countdown logic
 EDGE_DEBOUNCE_SECONDS = 1.0   # ignore bouncing re-triggers within this window (Uptime/Production)
-# Count/Reject use a MUCH longer debounce on purpose -- the original Node-RED flow
-# rate-limits Count to at most 1 per MINUTE (a "delay" node with rate=1/minute, drop
-# excess). Without this, a Start bit that pulses/bounces faster than once a minute
-# at the PLC level gets miscounted as multiple finished units.
-COUNT_DEBOUNCE_SECONDS = 60.0
+# JIGs: several JIGs pass each station's sensor one after another. Each JIG is one
+# rising edge of the station's sensor bit (it stays high for ~2-3 s while the JIG passes).
+# Edges closer together than this are the SAME JIG (sensor flicker, or Station 1's two
+# sensors both tripping) and are counted once. Per-station override: "jig_debounce".
+JIG_DEBOUNCE_SECONDS = 1.0
 
 # -- Outbound HTTP API. Developer confirmed only Uptime, Count, and Reject are
 # NEEDED for their dashboard -- Production Status is intentionally NOT surfaced
@@ -88,7 +88,7 @@ COUNT_SENT_ON_HTTP_200 = True
 # real finished-unit count and is where rejects are noticed, per client confirmation.
 STATIONS = [
     dict(code="STATION_1", mc_no="STATION_1", label="Stacking Bottom Cover Casing",
-         start=(11, 11), stop=(14, 0), sensor2=(11, 12), poll_interval=0.05, has_count=False, has_reject=False, reject=None),
+         start=(11, 11), stop=(14, 0), sensor2=(11, 12), jig_debounce=3.0, poll_interval=0.05, has_count=False, has_reject=False, reject=None),
     dict(code="STATION_2", mc_no="STATION_2", label="Stacking Top Cover Casing",
          start=(14, 1), stop=(14, 4), sensor2=None, poll_interval=0.05, has_count=False, has_reject=False, reject=None),
     dict(code="STATION_3", mc_no="STATION_3", label="Press Lock Cover Casing",
@@ -610,27 +610,27 @@ class EdgePipeline:
                     return 0, True
             return None, False
 
-class CountPipeline:
-    """Rising-edge pulse counter with a long debounce (60s, matches the real
-    Node-RED system's rate limiter). Used for Count (Station 5's Start bit).
-    NOT used for Reject -- that's a DM word we mirror directly, not a bit we
-    edge-count ourselves; see the reject handling in poll_station."""
-    def __init__(self):
+class JigPipeline:
+    """Counts JIGs passing a station's sensor: one accepted rising edge = one JIG.
+    `count` is the running number of JIGs since the station came up (the value sent as
+    uptimeStatus: 1, 2, 3 ...); it resets to 0 when the station goes down."""
+    def __init__(self, debounce, resume_count=0):
+        self.debounce = debounce
+        self.count = resume_count
         self.last_raw = False
-        self.last_edge_at = 0.0
+        self.last_edge_at = float("-inf")
 
-    def feed(self, raw_bit: bool) -> bool:
-        """Returns True exactly once per genuine rising edge, at most once per COUNT_DEBOUNCE_SECONDS."""
+    def edge(self, raw_bit: bool) -> bool:
+        """True once per genuine rising edge, at most once per `debounce` seconds."""
         now = time.monotonic()
-        edge = raw_bit and not self.last_raw and (now - self.last_edge_at) >= COUNT_DEBOUNCE_SECONDS
+        e = raw_bit and not self.last_raw and (now - self.last_edge_at) >= self.debounce
         self.last_raw = raw_bit
-        if edge:
+        if e:
             self.last_edge_at = now
-            return True
-        return False
+        return e
 
 class StationRuntime:
-    def __init__(self, cfg, resume_uptime=0, resume_prod=0, resume_reject=None):
+    def __init__(self, cfg, resume_uptime=0, resume_prod=0, resume_reject=None, resume_jig=0):
         """resume_uptime/resume_prod seed the pipelines from the last known state in
         the database, so an app RESTART does not blindly assume the machine is OFF
         when it may genuinely still be running. Without this, every restart looked
@@ -646,8 +646,8 @@ class StationRuntime:
         self.uptime_pipe.value = 1 if resume_uptime else 0
         self.prod_pipe = EdgePipeline()
         self.prod_pipe.value = 1 if resume_prod else 0
-        self.count_pipe = CountPipeline() if cfg["has_count"] else None
-        # Reject mirrors a DM word (D272) directly -- not a bit, so no CountPipeline.
+        self.jig = JigPipeline(cfg.get("jig_debounce", JIG_DEBOUNCE_SECONDS), resume_jig if resume_uptime else 0)
+        # Reject mirrors a DM word (D272) directly -- not a bit, so no edge counting.
         self.last_reject_value = resume_reject if (cfg["has_reject"] and cfg["reject"]) else None
 
 # Only trust a resumed "already running" state if it was confirmed genuinely
@@ -677,7 +677,8 @@ def _resume_value(code, field):
 runtimes = {s["code"]: StationRuntime(s,
     resume_uptime=_resume_value(s["code"], "uptime_status"),
     resume_prod=_resume_value(s["code"], "prod_status"),
-    resume_reject=store.get_total(s["code"], "reject"))
+    resume_reject=store.get_total(s["code"], "reject"),
+    resume_jig=store.get_total(s["code"], "jig"))
     for s in STATIONS}
 
 # ==================================================================== POLLING LOOP
@@ -712,12 +713,27 @@ def poll_station(s):
     effective_trigger = start_raw or sensor2_raw
     uv, uchanged = rt.uptime_pipe.feed(effective_trigger)
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
+    jig_edge = rt.jig.edge(effective_trigger)
 
-    # START: Uptime first, Production PRODUCTION_SEND_DELAY_SECONDS later (the backend
-    # needs Uptime registered before it accepts Production). Production is not shown
-    # in the UI; it exists because the backend requires it before it accepts Count.
+    # JIGs. Station down -> the first JIG sends Uptime 1. Station already up -> every
+    # further JIG sends Uptime 2, 3, 4 ... so the backend can count how many JIGs passed.
+    # Going down (no signal for DOWNTIME_GRACE_SECONDS) resets the number.
+    jig_event = False
     if uchanged and uv == 1:
-        send_signal(code, mc_no, "uptime", 1)
+        rt.jig.count, jig_event = 1, True
+    elif jig_edge and rt.uptime_pipe.value == 1:
+        rt.jig.count += 1
+        jig_event = True
+    elif uchanged and uv == 0:
+        rt.jig.count = 0
+    if jig_event or (uchanged and uv == 0):
+        store.set_total(code, "jig", rt.jig.count)
+    if jig_event:
+        send_signal(code, mc_no, "uptime", rt.jig.count)
+
+    # START: Production 1 goes out PRODUCTION_SEND_DELAY_SECONDS after the FIRST Uptime
+    # (the backend needs Uptime registered first). Not shown in the UI; the backend
+    # requires it before it accepts Count.
     if pchanged and pv == 1:
         threading.Timer(PRODUCTION_SEND_DELAY_SECONDS, send_signal, args=(code, mc_no, "production", 1)).start()
 
@@ -729,11 +745,11 @@ def poll_station(s):
     elif uchanged and uv == 0:
         send_signal(code, mc_no, "uptime", 0)
 
-    # Count: only Station 5 -- Start bit rising edge = one finished unit. Sent
-    # immediately, never held for Production.
-    if rt.count_pipe and rt.count_pipe.feed(start_raw):
-        store.bump_total(code, "count")   # running total stays local, for the dashboard
-        send_signal(code, mc_no, "count", 1)  # the API always receives 1 per finished unit
+    # Count: only Station 5 -- every JIG that passes is one finished unit, sent as Count 1
+    # immediately (the running total stays local, for the dashboard).
+    if rt.cfg["has_count"] and jig_event:
+        store.bump_total(code, "count")
+        send_signal(code, mc_no, "count", 1)
 
     # Reject: only Station 5. D272 is a DM WORD holding the PLC's own running
     # NG/reject count (TOGO_DisplayValue_Judgment_NG) -- confirmed directly in
