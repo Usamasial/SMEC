@@ -414,6 +414,45 @@ def test_count_waits_for_pending_production():
         import os; os.path.exists("test7.db") and os.remove("test7.db")
     print("PASS: Count is held until Production is sent, then released in order")
 
+def test_line_idle_watchdog_and_packet():
+    """No station signal for LINE_IDLE_SECONDS -> one prodStatus=0 packet for mc_no SMEC,
+    in the developer's exact shape; re-arms after activity; failure goes to retry queue."""
+    import os, re
+    orig = smec.LINE_IDLE_SECONDS
+    smec.LINE_IDLE_SECONDS = 0.2
+    try:
+        w = smec.LineIdleWatchdog()
+        assert w.due() is False, "must not fire immediately after start/restart"
+        time.sleep(0.25)
+        assert w.due() is True, "must fire after the idle window"
+        assert w.due() is False, "must fire only ONCE per idle episode"
+        w.note_activity()
+        time.sleep(0.25)
+        assert w.due() is True, "must re-arm after activity returns"
+        print("PASS: idle watchdog fires once per idle episode and re-arms on activity")
+
+        srv = http.server.HTTPServer(("127.0.0.1", 8767), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        smec.ENDPOINTS["production"] = "http://127.0.0.1:8767/api/production"
+        if os.path.exists("test8.db"): os.remove("test8.db")
+        smec.store = smec.Store(__import__("pathlib").Path("test8.db"))
+        Handler.fail_count = 0
+        smec.send_line_idle()
+        d = Handler.last_body["data"]["data"]
+        assert set(d) == {"datetime", "mc_no", "prodStatus"}, f"body must match the spec exactly, got {d}"
+        assert d["mc_no"] == "SMEC" and d["prodStatus"] == 0
+        assert re.fullmatch(r"\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}", d["datetime"]), d["datetime"]
+        items, total = smec.store.history_page(signal="line_idle")
+        assert total == 1 and items[0]["status"] == "sent"
+        Handler.fail_count = 1
+        smec.send_line_idle()
+        assert smec.store.queue_count() == 1, "failed packet must go to the retry queue"
+        srv.shutdown()
+        os.remove("test8.db")
+        print("PASS: line-idle packet matches the spec (SMEC, prodStatus 0, DD-MM-YYYY) and retries on failure")
+    finally:
+        smec.LINE_IDLE_SECONDS = orig
+
 if __name__ == "__main__":
     test_fins_frame()
     test_edge_pipeline()
@@ -429,4 +468,5 @@ if __name__ == "__main__":
     test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
     test_count_waits_for_pending_production()
+    test_line_idle_watchdog_and_packet()
     print("\nALL TESTS PASSED")
