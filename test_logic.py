@@ -460,6 +460,19 @@ def test_stop_order_production_then_uptime_and_count_is_one():
         os.path.exists("test9.db") and os.remove("test9.db")
     print("PASS: stop sends production_stop before Uptime 0; Count always sent as 1")
 
+def test_clear_history():
+    import os
+    if os.path.exists("test10.db"): os.remove("test10.db")
+    st = smec.Store(__import__("pathlib").Path("test10.db"))
+    for i in range(3):
+        st.log_history("STATION_1", "uptime", 1, "STATION_1", "002", f"m{i}", "x", status="sent")
+    st.enqueue("STATION_1", "uptime", {"data": {}}, "http://x", "q1")
+    assert st.clear_history() == 3
+    assert st.history_page()[1] == 0
+    assert st.queue_count() == 1, "clearing history must not touch the retry queue"
+    os.remove("test10.db")
+    print("PASS: clear_history deletes all history rows and leaves the retry queue alone")
+
 def test_production_stop_packet_per_station():
     """After DOWNTIME_GRACE_SECONDS with no running signal, the station sends the developer's
     exact stop packet (its own mc_no, prodStatus 0, DD-MM-YYYY, no package_no/msg_no)."""
@@ -521,5 +534,6 @@ if __name__ == "__main__":
     test_concurrent_db_access_does_not_crash()
     test_count_immediate_and_sent_on_http_200()
     test_stop_order_production_then_uptime_and_count_is_one()
+    test_clear_history()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")

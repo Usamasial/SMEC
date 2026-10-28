@@ -361,6 +361,15 @@ class Store:
                 (station_code, signal, value, mc_no, package_no, msg_no, datetime_str, status, http_status, error, now_ms()))
             self.c.commit()
 
+    def clear_history(self):
+        """Deletes every history row. Retry queue, running totals and message sequence
+        numbers are left alone, so nothing already waiting to be re-sent is affected."""
+        with self.lock:
+            n = self.c.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+            self.c.execute("DELETE FROM history")
+            self.c.commit()
+        return n
+
     def update_history_status(self, msg_no, status, http_status=None, error=None):
         with self.lock:
             self.c.execute("UPDATE history SET status=?, http_status=?, error=? WHERE msg_no=?",
@@ -877,6 +886,11 @@ def api_dashboard():
 def api_history(station_code: str = "", signal: str = "", status: str = "", limit: int = 100, offset: int = 0):
     items, total = store.history_page(station_code or None, signal or None, status or None, limit, offset)
     return {"items": items, "total": total}
+
+@app.delete("/api/history")
+def api_clear_history():
+    """Clear ALL history rows (the History tab's 'Clear all history' button)."""
+    return {"ok": True, "deleted": store.clear_history()}
 
 @app.get("/api/queue")
 def api_queue(limit: int = 100, offset: int = 0):

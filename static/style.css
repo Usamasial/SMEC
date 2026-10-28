@@ -330,3 +330,6 @@ main { padding: 28px; max-width: 1400px; margin: 0 auto; }
   main { padding: 16px; }
   .topbar { padding: 14px 16px; }
 }
+
+.filters .danger-btn { border-color: var(--bad); color: var(--bad); margin-left: auto; }
+.filters .danger-btn:hover { background: rgba(229,72,77,0.14); }

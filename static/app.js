@@ -107,6 +107,13 @@ async function loadHistory() {
      <span>${histOffset + 1}-${histOffset + r.items.length} of ${r.total}</span>
      <button onclick="histNext(${r.total})">Next</button>`;
 }
+async function clearHistory() {
+  if (!confirm("Delete ALL history records? This cannot be undone.")) return;
+  const r = await fetch("/api/history", { method: "DELETE" });
+  if (!r.ok) { alert("Could not clear history."); return; }
+  histOffset = 0;
+  loadHistory();
+}
 function histPrev() { histOffset = Math.max(0, histOffset - HIST_LIMIT); loadHistory(); }
 function histNext(total) { if (histOffset + HIST_LIMIT < total) { histOffset += HIST_LIMIT; loadHistory(); } }
 
