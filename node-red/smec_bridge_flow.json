@@ -1,0 +1,242 @@
+[
+  {
+    "id": "smec000000000001",
+    "type": "tab",
+    "label": "SMEC Bridge",
+    "disabled": false,
+    "info": "Polls the Omron PLC over FINS/UDP and sends Uptime, Count, Reject (plus the Production start/stop the backend needs) to the PNA API. Same rules as app.py."
+  },
+  {
+    "id": "smec00000000000c",
+    "type": "comment",
+    "z": "smec000000000001",
+    "name": "1. Read PLC (FINS/UDP 10.57.10.10:9600) every 100 ms",
+    "info": "",
+    "x": 230,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "smec000000000002",
+    "type": "inject",
+    "z": "smec000000000001",
+    "name": "every 100 ms",
+    "props": [],
+    "repeat": "0.1",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "",
+    "x": 140,
+    "y": 100,
+    "wires": [
+      [
+        "smec000000000003",
+        "smec000000000007"
+      ]
+    ]
+  },
+  {
+    "id": "smec000000000003",
+    "type": "function",
+    "z": "smec000000000001",
+    "name": "Build FINS reads",
+    "func": "// Sends one FINS \"Memory Area Read\" per entry in READS, same frames as app.py.\n// Replies come back on the UDP in node (same local port) and are matched by SID.\nconst DA1 = 10;   // PLC node\nconst SA1 = 4;    // this node\nconst READS = [\n    { key: \"S1_start\", word: 11, bit: 11 },   // STATION_1 Start   W11.11\n    { key: \"S1_s2\",    word: 11, bit: 12 },   // STATION_1 Sensor2 W11.12\n    { key: \"S2_start\", word: 14, bit: 1  },   // STATION_2 Start   W14.01\n    { key: \"S3_start\", word: 11, bit: 0  },   // STATION_3 Start   W11.00\n    { key: \"S4_start\", word: 11, bit: 3  },   // STATION_4 Start   W11.03\n    { key: \"S5_start\", word: 11, bit: 6  },   // STATION_5 Start   W11.06\n    { key: \"S5_reject\", dm: 272 },            // STATION_5 NG count D272 (TOGO_DisplayValue_Judgment_NG)\n];\nconst msgs = READS.map((r, i) => {\n    const sid = i + 1;\n    const header = Buffer.from([0x80, 0x00, 0x02, 0x00, DA1, 0x00, 0x00, SA1, 0x00, sid]);\n    const cmd = Buffer.from([0x01, 0x01]);\n    const params = r.dm !== undefined\n        ? Buffer.from([0x82, (r.dm >> 8) & 0xff, r.dm & 0xff, 0x00, 0x00, 0x01])            // DM word\n        : Buffer.from([0x31, (r.word >> 8) & 0xff, r.word & 0xff, r.bit, 0x00, 0x01]);       // Work bit\n    return { payload: Buffer.concat([header, cmd, params]) };\n});\nreturn [msgs];",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 100,
+    "wires": [
+      [
+        "smec000000000004"
+      ]
+    ]
+  },
+  {
+    "id": "smec000000000004",
+    "type": "udp out",
+    "z": "smec000000000001",
+    "name": "to PLC",
+    "addr": "10.57.10.10",
+    "iface": "",
+    "port": "9600",
+    "ipv": "udp4",
+    "outport": "9601",
+    "base64": false,
+    "multicast": "false",
+    "x": 560,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "smec000000000005",
+    "type": "udp in",
+    "z": "smec000000000001",
+    "name": "PLC replies",
+    "iface": "",
+    "port": "9601",
+    "bind": "",
+    "ipv": "udp4",
+    "multicast": "false",
+    "group": "",
+    "datatype": "buffer",
+    "x": 140,
+    "y": 160,
+    "wires": [
+      [
+        "smec000000000006"
+      ]
+    ]
+  },
+  {
+    "id": "smec000000000006",
+    "type": "function",
+    "z": "smec000000000001",
+    "name": "Parse FINS reply",
+    "func": "// Stores each FINS reply in flow context \"snap\" as { v, t } so the logic can use it.\nconst READS = [\n    { key: \"S1_start\", word: 11, bit: 11 },   // STATION_1 Start   W11.11\n    { key: \"S1_s2\",    word: 11, bit: 12 },   // STATION_1 Sensor2 W11.12\n    { key: \"S2_start\", word: 14, bit: 1  },   // STATION_2 Start   W14.01\n    { key: \"S3_start\", word: 11, bit: 0  },   // STATION_3 Start   W11.00\n    { key: \"S4_start\", word: 11, bit: 3  },   // STATION_4 Start   W11.03\n    { key: \"S5_start\", word: 11, bit: 6  },   // STATION_5 Start   W11.06\n    { key: \"S5_reject\", dm: 272 },            // STATION_5 NG count D272 (TOGO_DisplayValue_Judgment_NG)\n];\nconst d = msg.payload;\nif (!Buffer.isBuffer(d) || d.length < 15) return null;\nconst r = READS[d[9] - 1];              // SID -> which read this answers\nif (!r) return null;\nif (d[12] !== 0 || d[13] !== 0) {\n    node.status({ fill: \"red\", shape: \"dot\", text: \"FINS error \" + d.slice(12, 14).toString(\"hex\") + \" on \" + r.key });\n    return null;\n}\nlet v;\nif (r.dm !== undefined) {\n    if (d.length < 16) return null;\n    v = d.readUInt16BE(14);\n} else {\n    v = d[14] !== 0;\n}\nconst snap = flow.get(\"snap\") || {};\nsnap[r.key] = { v: v, t: Date.now() };\nflow.set(\"snap\", snap);\nreturn null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 160,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "smec00000000000d",
+    "type": "comment",
+    "z": "smec000000000001",
+    "name": "2. Station logic (JIG count, up/down, count, reject)",
+    "info": "",
+    "x": 240,
+    "y": 220,
+    "wires": []
+  },
+  {
+    "id": "smec000000000007",
+    "type": "function",
+    "z": "smec000000000001",
+    "name": "Station logic",
+    "func": "// Same rules as app.py:\n//  * Uptime: first JIG at a down station = 1, each further JIG while up = 2, 3, 4 ...\n//    Down = no running signal for GRACE_MS; the JIG number then resets.\n//  * Start: Uptime 1, then Production 1 PROD_DELAY_MS later (backend needs Uptime first).\n//  * Stop:  Production stop packet first, then Uptime 0 PROD_DELAY_MS later.\n//  * Count (STATION_5): every JIG sends count \"1\".\n//  * Reject (STATION_5): mirrors D272, sent when it changes.\nconst GRACE_MS = 180000;          // 3 minutes\nconst PROD_DELAY_MS = 5000;\nconst JIG_DEBOUNCE_MS = 1000;     // edges closer than this are the same JIG\nconst STALE_MS = 2000;            // PLC values older than this = PLC link lost\nconst API = \"http://10.57.10.4:8080/pna/public/api\";\nconst URL = { uptime: API + \"/machine_up_time\", production: API + \"/production\",\n              count: API + \"/machine_count\", reject: API + \"/machine_reject\" };\nconst PKG = { uptime: \"002\", production: \"003\", count: \"005\", reject: \"006\" };\nconst FIELD = { uptime: \"uptimeStatus\", production: \"prodStatus\", count: \"count\", reject: \"rejectCount\" };\nconst STATIONS = [\n    { code: \"STATION_1\", start: \"S1_start\", s2: \"S1_s2\", debounce: 3000 },  // two sensors, one JIG\n    { code: \"STATION_2\", start: \"S2_start\" },\n    { code: \"STATION_3\", start: \"S3_start\" },\n    { code: \"STATION_4\", start: \"S4_start\" },\n    { code: \"STATION_5\", start: \"S5_start\", count: true, reject: \"S5_reject\" },\n];\n\nfunction myt() { return new Date(Date.now() + 8 * 3600 * 1000).toISOString(); }  // Malaysia time\nfunction dtYmd() { const s = myt(); return s.slice(0, 10) + \" \" + s.slice(11, 19); }\nfunction dtDmy() { const s = myt(); return s.slice(8, 10) + \"-\" + s.slice(5, 7) + \"-\" + s.slice(0, 4) + \" \" + s.slice(11, 19); }\n\n// msg_no sequence per station+signal, restarts at 1 every day (like app.py)\nfunction nextSeq(code, signal) {\n    const seq = flow.get(\"seq\") || {};\n    const day = dtYmd().slice(0, 10);\n    const k = code + \":\" + signal;\n    if (!seq[k] || seq[k].day !== day) seq[k] = { day: day, n: 0 };\n    seq[k].n += 1;\n    flow.set(\"seq\", seq);\n    return seq[k].n;\n}\n\nfunction post(url, body, meta) {\n    meta.body = body;\n    meta.retries = 0;\n    node.send({ url: url, method: \"POST\", headers: { \"content-type\": \"application/json\" },\n                requestTimeout: 5000, payload: body, meta: meta });\n}\n\nfunction send(signal, code, value) {\n    const dt = dtYmd();\n    const msgNo = code + \"/\" + PKG[signal] + \"_\" + dt + \"_\" + nextSeq(code, signal);\n    const data = { datetime: dt, mc_no: code };\n    data[FIELD[signal]] = String(value);\n    data.package_no = PKG[signal];\n    data.msg_no = msgNo;\n    post(URL[signal], { data: { data: data } }, { station: code, signal: signal, value: value, msg_no: msgNo });\n}\n\n// Production stop: exactly the developer's packet (DD-MM-YYYY, prodStatus as a number, no package_no/msg_no)\nfunction sendStop(code) {\n    post(URL.production, { data: { data: { datetime: dtDmy(), mc_no: code, prodStatus: 0 } } },\n         { station: code, signal: \"production_stop\", value: 0 });\n}\n\nconst now = Date.now();\nconst snap = flow.get(\"snap\") || {};\nconst state = flow.get(\"state\") || {};\nconst fresh = (k) => snap[k] && (now - snap[k].t) < STALE_MS;\nlet lost = [];\n\nfor (const s of STATIONS) {\n    const keys = [s.start].concat(s.s2 ? [s.s2] : [], s.reject ? [s.reject] : []);\n    if (!keys.every(fresh)) { lost.push(s.code); continue; }\n    const st = state[s.code] || (state[s.code] = { value: 0, pendingOff: null, jig: 0, lastRaw: false, lastEdge: -1e15, last: null });\n    const trig = snap[s.start].v || (s.s2 ? snap[s.s2].v : false);\n\n    // Up/down with GRACE_MS before calling it down\n    let changed = false;\n    if (trig) {\n        st.pendingOff = null;\n        if (st.value !== 1) { st.value = 1; changed = true; }\n    } else {\n        if (st.value === 1 && st.pendingOff === null) st.pendingOff = now + GRACE_MS;\n        if (st.pendingOff !== null && now >= st.pendingOff) {\n            st.pendingOff = null;\n            if (st.value !== 0) { st.value = 0; changed = true; }\n        }\n    }\n\n    // One JIG = one rising edge, debounced\n    const edge = trig && !st.lastRaw && (now - st.lastEdge) >= (s.debounce || JIG_DEBOUNCE_MS);\n    st.lastRaw = trig;\n    if (edge) st.lastEdge = now;\n\n    let jigEvent = false;\n    if (changed && st.value === 1) { st.jig = 1; jigEvent = true; }\n    else if (edge && st.value === 1) { st.jig += 1; jigEvent = true; }\n    else if (changed && st.value === 0) { st.jig = 0; }\n\n    if (jigEvent) send(\"uptime\", s.code, st.jig);\n    if (changed && st.value === 1) {\n        setTimeout(() => send(\"production\", s.code, 1), PROD_DELAY_MS);\n    }\n    if (changed && st.value === 0) {\n        sendStop(s.code);\n        setTimeout(() => send(\"uptime\", s.code, 0), PROD_DELAY_MS);\n    }\n    if (s.count && jigEvent) send(\"count\", s.code, 1);\n\n    // Reject: mirror the PLC's own NG counter. First value after a (re)deploy is only\n    // remembered, not sent, so a restart doesn't re-send an already-known count.\n    if (s.reject) {\n        const v = snap[s.reject].v;\n        if (st.last !== null && v !== st.last) send(\"reject\", s.code, v);\n        st.last = v;\n    }\n}\nflow.set(\"state\", state);\nnode.status(lost.length ? { fill: \"red\", shape: \"ring\", text: \"PLC link lost: \" + lost.join(\", \") }\n                        : { fill: \"green\", shape: \"dot\", text: \"PLC OK\" });\nreturn null;",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 360,
+    "y": 280,
+    "wires": [
+      [
+        "smec000000000008"
+      ]
+    ]
+  },
+  {
+    "id": "smec00000000000e",
+    "type": "comment",
+    "z": "smec000000000001",
+    "name": "3. Send to API, check reply, retry network failures",
+    "info": "",
+    "x": 240,
+    "y": 340,
+    "wires": []
+  },
+  {
+    "id": "smec000000000008",
+    "type": "http request",
+    "z": "smec000000000001",
+    "name": "POST to API",
+    "method": "POST",
+    "ret": "txt",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [],
+    "x": 580,
+    "y": 280,
+    "wires": [
+      [
+        "smec000000000009"
+      ]
+    ]
+  },
+  {
+    "id": "smec000000000009",
+    "type": "function",
+    "z": "smec000000000001",
+    "name": "Check reply",
+    "func": "// Same success rules as app.py:\n//  * HTTP 2xx and body \"status\" == \"200\" (or no wrapped status)  -> sent\n//  * HTTP 2xx but body \"status\" != \"200\" -> rejected, NOT retried (backend refused it)\n//    Count is the exception: any HTTP 2xx counts as sent.\n//  * Network error / timeout / non-2xx -> retried every 5 s, up to MAX_RETRIES, then failed\n//    (on a network error the HTTP request node puts the error code, e.g. ECONNREFUSED,\n//    in msg.statusCode and the error text in msg.payload)\nconst MAX_RETRIES = 10;\nconst m = msg.meta || {};\nconst http = msg.statusCode;\nlet result, detail = \"\";\nif (typeof http === \"number\" && http >= 200 && http < 300) {\n    let body = null;\n    try { body = typeof msg.payload === \"string\" ? JSON.parse(msg.payload) : msg.payload; } catch (e) {}\n    let ok = true;\n    if (body && typeof body === \"object\" && \"status\" in body) {\n        ok = String(body.status) === \"200\";\n        if (!ok) detail = (body.msg || JSON.stringify(body)).toString().slice(0, 200);\n    }\n    result = ok ? \"sent\" : (m.signal === \"count\" ? \"sent\" : \"rejected\");\n} else {\n    detail = typeof http === \"number\" ? \"HTTP \" + http : String(msg.payload).slice(0, 200);\n    m.retries = (m.retries || 0) + 1;\n    if (m.retries < MAX_RETRIES) {\n        result = \"retrying\";\n    } else {\n        result = \"failed\";\n    }\n}\nconst line = result.toUpperCase() + \"  \" + m.station + \"  \" + m.signal + \"=\" + m.value +\n             (typeof http === \"number\" ? \"  http=\" + http : \"\") + (detail ? \"  \" + detail : \"\") +\n             (result === \"retrying\" ? \"  (try \" + m.retries + \"/\" + MAX_RETRIES + \")\" : \"\");\nnode.status({ fill: result === \"sent\" ? \"green\" : result === \"retrying\" ? \"yellow\" : \"red\", shape: \"dot\",\n              text: line.slice(0, 60) });\nconst log = { payload: line, result: result, meta: m };\nif (result === \"retrying\") {\n    const retry = { url: msg.url, method: \"POST\", headers: { \"content-type\": \"application/json\" },\n                    requestTimeout: 5000, payload: m.body, meta: m };\n    return [log, retry];\n}\nreturn [log, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 800,
+    "y": 280,
+    "wires": [
+      [
+        "smec00000000000b"
+      ],
+      [
+        "smec00000000000a"
+      ]
+    ]
+  },
+  {
+    "id": "smec00000000000a",
+    "type": "delay",
+    "z": "smec000000000001",
+    "name": "retry in 5 s",
+    "pauseType": "delay",
+    "timeout": "5",
+    "timeoutUnits": "seconds",
+    "rate": "1",
+    "nbRateUnits": "1",
+    "rateUnits": "second",
+    "randomFirst": "1",
+    "randomLast": "5",
+    "randomUnits": "seconds",
+    "drop": false,
+    "allowrate": false,
+    "outputs": 1,
+    "x": 800,
+    "y": 400,
+    "wires": [
+      [
+        "smec000000000008"
+      ]
+    ]
+  },
+  {
+    "id": "smec00000000000b",
+    "type": "debug",
+    "z": "smec000000000001",
+    "name": "Delivery log",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1010,
+    "y": 280,
+    "wires": []
+  }
+]
