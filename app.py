@@ -58,10 +58,12 @@ ENDPOINTS = {
     "uptime":     f"{API_BASE}/machine_up_time",
     "production": f"{API_BASE}/production",   # internal-only, unblocks Count -- see note above
     "count":      f"{API_BASE}/machine_count",
-    "reject":     f"{API_BASE}/machine_reject",  # ASSUMED -- confirm with client, easy to change here
+    "reject":     f"{API_BASE}/machine_reject",  # confirmed by manual test (field "count")
 }
 PACKAGE_NO = {"uptime": "002", "production": "003", "count": "005", "reject": "006"}
-PAYLOAD_FIELD = {"uptime": "uptimeStatus", "production": "prodStatus", "count": "count", "reject": "rejectCount"}
+# Reject uses the field name "count" too -- confirmed by a manual test against
+# /machine_reject: the backend reads "count" and silently ignored "rejectCount".
+PAYLOAD_FIELD = {"uptime": "uptimeStatus", "production": "prodStatus", "count": "count", "reject": "count"}
 HTTP_TIMEOUT = 5
 # Their backend needs time to internally register Uptime/Production before it'll
 # accept Count for the same station -- 2s was tried on-site and wasn't enough
@@ -853,7 +855,7 @@ def api_config():
         "outbound_apis": [
             {"signal": "Uptime", "url": ENDPOINTS["uptime"], "package_no": PACKAGE_NO["uptime"], "confirmed": True},
             {"signal": "Count", "url": ENDPOINTS["count"], "package_no": PACKAGE_NO["count"], "confirmed": True},
-            {"signal": "Reject", "url": ENDPOINTS["reject"], "package_no": PACKAGE_NO["reject"], "confirmed": False},
+            {"signal": "Reject", "url": ENDPOINTS["reject"], "package_no": PACKAGE_NO["reject"], "confirmed": True},
         ],
         "stations": [{"code": s["code"], "label": s["label"], "mc_no": s["mc_no"],
                       "start": f"W{s['start'][0]}.{s['start'][1]:02d}", "stop": f"W{s['stop'][0]}.{s['stop'][1]:02d}",

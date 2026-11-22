@@ -548,6 +548,26 @@ def test_external_input_endpoint():
         restore()
     print("PASS: /api/input -- Uptime input drives the station like a JIG; Count/Reject are sent as given")
 
+def test_reject_payload_uses_count_field():
+    """The backend's /machine_reject reads the value from "count" (manual test proved it);
+    "rejectCount" was silently ignored."""
+    srv = http.server.HTTPServer(("127.0.0.1", 8769), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    import os
+    if os.path.exists("test12.db"): os.remove("test12.db")
+    smec.store = smec.Store(__import__("pathlib").Path("test12.db"))
+    orig = smec.ENDPOINTS["reject"]
+    smec.ENDPOINTS["reject"] = "http://127.0.0.1:8769/api/machine_reject"
+    try:
+        Handler.fail_count = 0
+        smec.send_signal("STATION_5", "STATION_5", "reject", 1)
+        d = Handler.last_body["data"]["data"]
+        assert d["count"] == "1" and "rejectCount" not in d, d
+    finally:
+        smec.ENDPOINTS["reject"] = orig
+        srv.shutdown(); os.remove("test12.db")
+    print("PASS: Reject is sent in the 'count' field, as /machine_reject expects")
+
 def test_clear_history():
     import os
     if os.path.exists("test10.db"): os.remove("test10.db")
@@ -625,6 +645,7 @@ if __name__ == "__main__":
     test_station5_count_per_jig()
     test_station1_sensor2_does_not_count_as_running()
     test_external_input_endpoint()
+    test_reject_payload_uses_count_field()
     test_clear_history()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")
