@@ -571,6 +571,36 @@ def test_reject_payload_uses_count_field():
         srv.shutdown(); os.remove("test12.db")
     print("PASS: Reject body is exactly {datetime DD-MM-YYYY, mc_no, count}, like the working manual test")
 
+def test_dashboard_run_counts_reset_when_all_stations_down():
+    """Count box goes up per JIG; it resets to 0 only when EVERY station is down."""
+    cfg, rt, sent, bits, restore = _jig_harness("STATION_3", {"start": (11, 0)})
+    try:
+        smec.DOWNTIME_GRACE_SECONDS = 0.3
+        rt.jig.debounce = 0.05
+        for code, r in smec.runtimes.items():
+            if code != "STATION_3": r.uptime_pipe.value = 0
+        smec.runtimes["STATION_1"].uptime_pipe.value = 1        # another station still up
+        for _ in range(2):
+            bits[(11, 0)] = True;  smec.poll_station(cfg); time.sleep(0.1)
+            bits[(11, 0)] = False; smec.poll_station(cfg); time.sleep(0.1)
+        smec.store.set_total("STATION_5", "run_reject", 4)
+        assert smec.store.get_total("STATION_3", "run_count") == 2
+        time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.2)   # Station 3 down, Station 1 still up
+        assert smec.store.get_total("STATION_3", "run_count") == 2, "must NOT reset while another station is up"
+        smec.runtimes["STATION_1"].uptime_pipe.value = 0
+        bits[(11, 0)] = True; smec.poll_station(cfg); bits[(11, 0)] = False; smec.poll_station(cfg)
+        assert smec.store.get_total("STATION_3", "run_count") == 3
+        time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.2)   # now everything is down
+        assert smec.store.get_total("STATION_3", "run_count") == 0
+        assert smec.store.get_total("STATION_5", "run_reject") == 0
+        d = smec.api_dashboard()
+        s5 = [s for s in d["stations"] if s["code"] == "STATION_5"][0]
+        s3 = [s for s in d["stations"] if s["code"] == "STATION_3"][0]
+        assert s5["has_reject"] is True and s3["has_reject"] is False and s3["run_count"] == 0
+    finally:
+        restore()
+    print("PASS: dashboard Count/Reject boxes count per run and reset only when all stations are down")
+
 def test_clear_history():
     import os
     if os.path.exists("test10.db"): os.remove("test10.db")
@@ -649,6 +679,7 @@ if __name__ == "__main__":
     test_station1_sensor2_does_not_count_as_running()
     test_external_input_endpoint()
     test_reject_payload_uses_count_field()
+    test_dashboard_run_counts_reset_when_all_stations_down()
     test_clear_history()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")

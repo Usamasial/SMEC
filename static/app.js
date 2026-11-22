@@ -51,18 +51,17 @@ async function loadDashboard() {
     const statusCls = known ? (running ? "on" : "off") : "";
     const plcCls = s.plc_ok ? "on" : "off";
 
-    // Only Station 5 produces measurable output (Count/Reject) -- hardcoded here
-    // on the frontend only, matching the real fact that no other station has
-    // these values, without needing any backend field for it.
-    const hasOutput = s.code === "STATION_5";
-    const outputBlock = hasOutput ? `
+    // OUTPUT: every station has a Count box (JIGs counted this run; Station 5 = Counts
+    // sent). Only stations with a reject signal (Station 5) also get a Reject box.
+    // Both reset to 0 by the app when every station is down, then count up again.
+    const outputBlock = `
       <div class="output-section">
-        <div class="section-label">OUTPUT</div>
-        <div class="output-grid">
-          <div class="output-tile"><div class="num">${s.count ?? 0}</div><div class="lbl">Count</div></div>
-          <div class="output-tile reject"><div class="num">${s.reject_count ?? 0}</div><div class="lbl">Reject</div></div>
+        <div class="section-label">OUTPUT · THIS RUN</div>
+        <div class="output-grid ${s.has_reject ? "" : "single"}">
+          <div class="output-tile"><div class="num">${s.run_count ?? 0}</div><div class="lbl">Count</div></div>
+          ${s.has_reject ? `<div class="output-tile reject"><div class="num">${s.run_reject ?? 0}</div><div class="lbl">Reject</div></div>` : ""}
         </div>
-      </div>` : "";
+      </div>`;
 
     return `<div class="station-card ${cardCls}">
       <div class="station-head">
@@ -75,8 +74,6 @@ async function loadDashboard() {
       </div>
       <div class="station-metrics">
         ${metric("PLC Link", s.plc_ok ? "OK" : "LOST", plcCls)}
-        ${metric("Last Success", s.last_success_at ? s.last_success_at.split(" ")[1] || s.last_success_at : "Never", s.last_success_at ? "na" : "off")}
-        ${metric("Sensor now", s.raw_start == null ? "--" : "Start " + s.raw_start + (s.code === "STATION_1" ? " · S2 " + s.raw_sensor2 + " (not used)" : ""), s.raw_start ? "on" : "na")}
         ${metric("Last Attempt", s.last_attempt_at ? s.last_attempt_at.split(" ")[1] || s.last_attempt_at : "--", "na")}
       </div>
       ${outputBlock}

@@ -191,7 +191,7 @@ main { padding: 28px; max-width: 1400px; margin: 0 auto; }
 .station-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 2px; }
 .station-card h3 { margin: 0; font-size: 14.5px; font-weight: 650; color: var(--text); letter-spacing: 0.2px; }
 .station-num { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
-.station-card .label { color: var(--text-faint); font-size: 12px; margin-bottom: 16px; }
+.station-card .label { color: var(--text-faint); font-size: 12px; margin-bottom: 16px; line-height: 1.35; min-height: calc(2 * 1.35em); }  /* 2 lines, so every card lines up */
 
 .status-row {
   display: flex;
@@ -222,8 +222,7 @@ main { padding: 28px; max-width: 1400px; margin: 0 auto; }
 .v.off  { color: var(--bad); }
 .v.na   { color: var(--text-dim); }
 
-/* Output section -- only Station 5 has this, visually distinct since it's the
-   only station producing measurable output (final step of the line). */
+/* Output section -- Count on every station, Reject only on Station 5. */
 .output-section {
   margin-top: 14px;
   padding-top: 14px;
@@ -236,6 +235,7 @@ main { padding: 28px; max-width: 1400px; margin: 0 auto; }
   letter-spacing: 0.4px;
 }
 .output-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.output-grid.single { grid-template-columns: 1fr; }
 .output-tile {
   background: var(--panel-2);
   border: 1px solid var(--border);

@@ -707,6 +707,13 @@ def send_stop_sequence(code, mc_no, also_uptime):
         time.sleep(PRODUCTION_SEND_DELAY_SECONDS)
         send_signal(code, mc_no, "uptime", 0)
 
+def reset_run_counts():
+    """Zero every station's dashboard Count/Reject box (the API totals are untouched)."""
+    for st in STATIONS:
+        store.set_total(st["code"], "run_count", 0)
+        store.set_total(st["code"], "run_reject", 0)
+    log.info("all stations down -- dashboard run counts reset")
+
 def poll_station(s):
     code, mc_no = s["code"], s["mc_no"]
     rt = runtimes[code]
@@ -746,6 +753,8 @@ def poll_station(s):
         store.set_total(code, "jig", rt.jig.count)
     if jig_event:
         send_signal(code, mc_no, "uptime", 1)
+        if not rt.cfg["has_count"]:
+            store.bump_total(code, "run_count")   # dashboard Count box (Station 5 counts its Count sends)
 
     # START: Production 1 goes out PRODUCTION_SEND_DELAY_SECONDS after the FIRST Uptime
     # (the backend needs Uptime registered first). Not shown in the UI; the backend
@@ -761,12 +770,18 @@ def poll_station(s):
     elif uchanged and uv == 0:
         send_signal(code, mc_no, "uptime", 0)
 
+    # Dashboard run counters: once EVERY station is down, the run is over -- reset the
+    # Count/Reject boxes to 0 so the next run counts from scratch.
+    if uchanged and uv == 0 and all(r.uptime_pipe.value == 0 for r in runtimes.values()):
+        reset_run_counts()
+
     # Count: only Station 5 -- every JIG that passes is one finished unit, sent as Count 1
     # immediately (the running total stays local, for the dashboard).
     # (Count from Node-RED comes in separately via POST /api/input, so an Uptime input
     # alone does not send a Count.)
     if rt.cfg["has_count"] and jig_event and start_raw:
         store.bump_total(code, "count")
+        store.bump_total(code, "run_count")
         send_signal(code, mc_no, "count", 1)
 
     # Reject: only Station 5. D272 is a DM WORD holding the PLC's own running
@@ -779,6 +794,7 @@ def poll_station(s):
         if rt.last_reject_value is None or reject_value != rt.last_reject_value:
             store.set_total(code, "reject", reject_value)
             send_signal(code, mc_no, "reject", reject_value)
+            store.bump_total(code, "run_reject")
             rt.last_reject_value = reject_value
 
     store.update_state(code, uptime_status=rt.uptime_pipe.value, prod_status=rt.prod_pipe.value,
@@ -914,7 +930,10 @@ def api_dashboard():
     states = store.get_states()
     plc_connected = all(v["plc_ok"] for v in states.values()) if states else False
     return {"plc_connected": plc_connected, "queue_size": store.queue_count(),
-            "stations": [{"code": s["code"], "label": s["label"], **states.get(s["code"], {})} for s in STATIONS]}
+            "stations": [{"code": s["code"], "label": s["label"], "has_reject": s["has_reject"],
+                          "run_count": store.get_total(s["code"], "run_count"),
+                          "run_reject": store.get_total(s["code"], "run_reject"),
+                          **states.get(s["code"], {})} for s in STATIONS]}
 
 @app.get("/api/history")
 def api_history(station_code: str = "", signal: str = "", status: str = "", limit: int = 100, offset: int = 0):
@@ -953,6 +972,9 @@ def api_input(payload: dict = Body(...)):
         return bad("value must be a whole number.")
     if signal == "count":
         store.bump_total(code, "count")
+        store.bump_total(code, "run_count")
+    else:
+        store.bump_total(code, "run_reject")
     result = send_signal(code, s["mc_no"], signal, value)
     return {"ok": True, "station": code, "signal": signal, "value": value, "result": result}
 
