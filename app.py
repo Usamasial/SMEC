@@ -753,8 +753,7 @@ def poll_station(s):
         store.set_total(code, "jig", rt.jig.count)
     if jig_event:
         send_signal(code, mc_no, "uptime", 1)
-        if not rt.cfg["has_count"]:
-            store.bump_total(code, "run_count")   # dashboard Count box (Station 5 counts its Count sends)
+        store.bump_total(code, "run_count")   # dashboard Count box: one per Uptime 1, every station
 
     # START: Production 1 goes out PRODUCTION_SEND_DELAY_SECONDS after the FIRST Uptime
     # (the backend needs Uptime registered first). Not shown in the UI; the backend
@@ -781,7 +780,6 @@ def poll_station(s):
     # alone does not send a Count.)
     if rt.cfg["has_count"] and jig_event and start_raw:
         store.bump_total(code, "count")
-        store.bump_total(code, "run_count")
         send_signal(code, mc_no, "count", 1)
 
     # Reject: only Station 5. D272 is a DM WORD holding the PLC's own running
@@ -842,7 +840,12 @@ def bad(msg, code=400): return JSONResponse(status_code=code, content={"detail":
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return open("templates/index.html", encoding="utf-8").read()
+    # ?v=<file time> makes the browser load the new CSS/JS after every update,
+    # instead of showing a cached old version.
+    html = open("templates/index.html", encoding="utf-8").read()
+    for f in ("style.css", "app.js"):
+        html = html.replace(f"/static/{f}", f"/static/{f}?v={int(os.path.getmtime(os.path.join('static', f)))}")
+    return html
 
 @app.get("/api/stations")
 def api_stations():
@@ -972,7 +975,6 @@ def api_input(payload: dict = Body(...)):
         return bad("value must be a whole number.")
     if signal == "count":
         store.bump_total(code, "count")
-        store.bump_total(code, "run_count")
     else:
         store.bump_total(code, "run_reject")
     result = send_signal(code, s["mc_no"], signal, value)

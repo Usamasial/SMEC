@@ -51,8 +51,8 @@ async function loadDashboard() {
     const statusCls = known ? (running ? "on" : "off") : "";
     const plcCls = s.plc_ok ? "on" : "off";
 
-    // OUTPUT: every station has a Count box (JIGs counted this run; Station 5 = Counts
-    // sent). Only stations with a reject signal (Station 5) also get a Reject box.
+    // OUTPUT: every station has a Count box (Uptime 1 signals this run). Only stations
+    // with a reject signal (Station 5) also get a Reject box.
     // Both reset to 0 by the app when every station is down, then count up again.
     const outputBlock = `
       <div class="output-section">

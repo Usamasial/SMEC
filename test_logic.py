@@ -593,10 +593,15 @@ def test_dashboard_run_counts_reset_when_all_stations_down():
         time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.2)   # now everything is down
         assert smec.store.get_total("STATION_3", "run_count") == 0
         assert smec.store.get_total("STATION_5", "run_reject") == 0
+        # Station 5: its Count box counts Uptime 1 too, like every other station
+        smec.runtimes["STATION_5"].ext_signal = True
+        smec.poll_station(smec.STATIONS_BY_CODE["STATION_5"])
+        assert smec.store.get_total("STATION_5", "run_count") == 1, "Station 5 Uptime 1 must count"
+        assert "style.css?v=" in smec.index() and "app.js?v=" in smec.index()
         d = smec.api_dashboard()
         s5 = [s for s in d["stations"] if s["code"] == "STATION_5"][0]
         s3 = [s for s in d["stations"] if s["code"] == "STATION_3"][0]
-        assert s5["has_reject"] is True and s3["has_reject"] is False and s3["run_count"] == 0
+        assert s5["has_reject"] is True and s3["has_reject"] is False and s3["run_count"] == 0 and s5["run_count"] == 1
     finally:
         restore()
     print("PASS: dashboard Count/Reject boxes count per run and reset only when all stations are down")
