@@ -715,8 +715,8 @@ def poll_station(s):
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
     jig_edge = rt.jig.edge(effective_trigger)
 
-    # JIGs. Station down -> the first JIG sends Uptime 1. Station already up -> every
-    # further JIG sends Uptime 2, 3, 4 ... so the backend can count how many JIGs passed.
+    # JIGs. Every JIG that passes sends Uptime 1 (always 1 -- the value never goes
+    # above 1). rt.jig.count still tracks how many JIGs passed since the station came up.
     # Going down (no signal for DOWNTIME_GRACE_SECONDS) resets the number.
     jig_event = False
     if uchanged and uv == 1:
@@ -729,7 +729,7 @@ def poll_station(s):
     if jig_event or (uchanged and uv == 0):
         store.set_total(code, "jig", rt.jig.count)
     if jig_event:
-        send_signal(code, mc_no, "uptime", rt.jig.count)
+        send_signal(code, mc_no, "uptime", 1)
 
     # START: Production 1 goes out PRODUCTION_SEND_DELAY_SECONDS after the FIRST Uptime
     # (the backend needs Uptime registered first). Not shown in the UI; the backend

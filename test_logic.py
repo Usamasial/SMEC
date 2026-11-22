@@ -467,7 +467,7 @@ def _jig_harness(code, bit_map):
     return cfg, rt, sent, bits, restore
 
 def test_multiple_jigs_uptime_1_2_3_and_reset():
-    """Station down -> first JIG = Uptime 1; already up -> next JIGs = 2, 3; after the
+    """Every JIG sends Uptime 1 (never 2, 3...); after the
     station goes down (no signal for the grace time) the number resets to 1."""
     cfg, rt, sent, bits, restore = _jig_harness("STATION_3", {"start": (11, 0)})
     try:
@@ -477,11 +477,11 @@ def test_multiple_jigs_uptime_1_2_3_and_reset():
             bits[(11, 0)] = True;  smec.poll_station(cfg); time.sleep(0.1)
             bits[(11, 0)] = False; smec.poll_station(cfg); time.sleep(0.1)
         ups = [v for (_, sig, v) in sent if sig == "uptime"]
-        assert ups == [1, 2, 3], f"expected Uptime 1,2,3 for 3 JIGs, got {ups}"
+        assert ups == [1, 1, 1], f"expected Uptime 1 for each of 3 JIGs, got {ups}"
         # station goes quiet past the grace time -> stop sequence, number resets
         time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.3)
         allv = [(sig, v) for (_, sig, v) in sent]
-        names = allv[allv.index(("uptime", 3)) + 1:]
+        names = allv[len(allv) - 1 - allv[::-1].index(("uptime", 1)) + 1:]
         names = [n for n in names if n[0] != "production"]
         assert names == [("production_stop", 0), ("uptime", 0)], names
         assert rt.jig.count == 0
@@ -490,7 +490,7 @@ def test_multiple_jigs_uptime_1_2_3_and_reset():
         assert [(sig, v) for (_, sig, v) in sent] == [("uptime", 1)], "first JIG after down must be Uptime 1 again"
     finally:
         restore()
-    print("PASS: JIGs send Uptime 1, 2, 3 while up, and restart at 1 after the station goes down")
+    print("PASS: every JIG sends Uptime 1, and the station still goes down after the grace time")
 
 def test_station1_two_sensors_count_one_jig_once():
     """A JIG that trips Start then Sensor 2 (or both) is ONE JIG at Station 1."""
@@ -505,7 +505,7 @@ def test_station1_two_sensors_count_one_jig_once():
         assert [v for (_, sig, v) in sent if sig == "uptime"] == [1], sent
         time.sleep(0.4)                                            # JIG 2, well after
         bits[(11, 11)] = True;  smec.poll_station(cfg)
-        assert [v for (_, sig, v) in sent if sig == "uptime"] == [1, 2], sent
+        assert [v for (_, sig, v) in sent if sig == "uptime"] == [1, 1], sent
     finally:
         restore()
     print("PASS: Station 1 counts a JIG tripping both sensors once")
@@ -520,7 +520,7 @@ def test_station5_count_per_jig():
             bits[(11, 6)] = False; smec.poll_station(cfg); time.sleep(0.1)
         counts = [v for (_, sig, v) in sent if sig == "count"]
         ups = [v for (_, sig, v) in sent if sig == "uptime"]
-        assert counts == [1, 1, 1] and ups == [1, 2, 3], (counts, ups)
+        assert counts == [1, 1, 1] and ups == [1, 1, 1], (counts, ups)
         assert smec.store.get_total("STATION_5", "count") == 3
     finally:
         restore()
