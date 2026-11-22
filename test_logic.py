@@ -520,6 +520,34 @@ def test_station5_count_per_jig():
         restore()
     print("PASS: Station 5 sends Count 1 for every JIG")
 
+def test_external_input_endpoint():
+    """POST /api/input (Node-RED): Uptime input acts like a JIG on the Start sensor (Uptime 1,
+    down after the grace time, no Count); Count/Reject inputs are sent as given."""
+    from fastapi.testclient import TestClient
+    cfg, rt, sent, bits, restore = _jig_harness("STATION_5", {"start": (11, 6)})
+    try:
+        smec.DOWNTIME_GRACE_SECONDS = 0.3
+        orig_send = smec.send_signal
+        smec.send_signal = lambda c, mc, sig, val: (sent.append((c, sig, val)), "sent")[1]
+        c = TestClient(smec.app)
+        r = c.post("/api/input", json={"station": "STATION_5", "signal": "uptime", "value": 1})
+        assert r.status_code == 200, r.text
+        smec.poll_station(cfg)                       # PLC Start bit is 0; the input alone drives it
+        smec.poll_station(cfg)
+        assert [x for x in sent if x[1] in ("uptime", "count")] == [("STATION_5", "uptime", 1)], sent
+        time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.3)
+        assert ("STATION_5", "uptime", 0) in sent and ("STATION_5", "production_stop", 0) in sent, sent
+        sent.clear()
+        assert c.post("/api/input", json={"station": "STATION_5", "signal": "count", "value": 1}).json()["result"] == "sent"
+        assert c.post("/api/input", json={"station": "STATION_5", "signal": "reject", "value": 3}).json()["result"] == "sent"
+        assert sent == [("STATION_5", "count", 1), ("STATION_5", "reject", 3)], sent
+        assert c.post("/api/input", json={"station": "STATION_9", "signal": "uptime"}).status_code == 404
+        assert c.post("/api/input", json={"station": "STATION_1", "signal": "x"}).status_code == 400
+        smec.send_signal = orig_send
+    finally:
+        restore()
+    print("PASS: /api/input -- Uptime input drives the station like a JIG; Count/Reject are sent as given")
+
 def test_clear_history():
     import os
     if os.path.exists("test10.db"): os.remove("test10.db")
@@ -596,6 +624,7 @@ if __name__ == "__main__":
     test_station1_two_sensors_count_one_jig_once()
     test_station5_count_per_jig()
     test_station1_sensor2_does_not_count_as_running()
+    test_external_input_endpoint()
     test_clear_history()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")

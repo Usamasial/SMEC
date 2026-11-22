@@ -496,10 +496,11 @@ def _record_failure(station_code, signal, value, payload, url, msg_no, http_stat
     if http_status is not None and 200 <= http_status < 300:
         store.update_history_status(msg_no, "rejected", http_status, error)
         bus.publish("rejected", {"station": station_code, "signal": signal, "value": value, "error": error})
-    else:
-        store.update_history_status(msg_no, "queued", http_status, error)
-        store.enqueue(station_code, signal, payload, url, msg_no)
-        bus.publish("queued", {"station": station_code, "signal": signal, "value": value, "error": error})
+        return "rejected"
+    store.update_history_status(msg_no, "queued", http_status, error)
+    store.enqueue(station_code, signal, payload, url, msg_no)
+    bus.publish("queued", {"station": station_code, "signal": signal, "value": value, "error": error})
+    return "queued"
 
 def send_signal(station_code, mc_no, signal, value):
     """Direct-send-first. On failure, drop into the retry queue -- msg_no and
@@ -522,8 +523,8 @@ def send_signal(station_code, mc_no, signal, value):
     if ok:
         store.update_history_status(msg_no, "sent", http_status, error)
         bus.publish("sent", {"station": station_code, "signal": signal, "value": value})
-    else:
-        _record_failure(station_code, signal, value, payload, url, msg_no, http_status, error)
+        return "sent"
+    return _record_failure(station_code, signal, value, payload, url, msg_no, http_status, error)
 
 def send_production_stop(station_code, mc_no):
     """Per-machine 'production stopped' packet, sent once a station has shown no running
@@ -646,6 +647,9 @@ class StationRuntime:
         self.uptime_pipe.value = 1 if resume_uptime else 0
         self.prod_pipe = EdgePipeline()
         self.prod_pipe.value = 1 if resume_prod else 0
+        # Set by POST /api/input (e.g. from Node-RED): counts as the station's running
+        # signal for one poll cycle, exactly like a JIG on its Start sensor.
+        self.ext_signal = False
         self.jig = JigPipeline(cfg.get("jig_debounce", JIG_DEBOUNCE_SECONDS), resume_jig if resume_uptime else 0)
         # Reject mirrors a DM word (D272) directly -- not a bit, so no edge counting.
         self.last_reject_value = resume_reject if (cfg["has_reject"] and cfg["reject"]) else None
@@ -711,7 +715,9 @@ def poll_station(s):
     # Uptime -- driven ONLY by the station's Start (JIG) sensor, the same for every
     # station. Station 1's Sensor 2 (W11.12) is still read and shown on the dashboard,
     # but it no longer counts as "running": it was keeping Station 1 up with no JIG.
-    effective_trigger = start_raw
+    # An Uptime input from POST /api/input (Node-RED) counts the same as a JIG on Start.
+    ext, rt.ext_signal = rt.ext_signal, False
+    effective_trigger = start_raw or ext
     uv, uchanged = rt.uptime_pipe.feed(effective_trigger)
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
     jig_edge = rt.jig.edge(effective_trigger)
@@ -748,7 +754,9 @@ def poll_station(s):
 
     # Count: only Station 5 -- every JIG that passes is one finished unit, sent as Count 1
     # immediately (the running total stays local, for the dashboard).
-    if rt.cfg["has_count"] and jig_event:
+    # (Count from Node-RED comes in separately via POST /api/input, so an Uptime input
+    # alone does not send a Count.)
+    if rt.cfg["has_count"] and jig_event and start_raw:
         store.bump_total(code, "count")
         send_signal(code, mc_no, "count", 1)
 
@@ -908,6 +916,36 @@ def api_history(station_code: str = "", signal: str = "", status: str = "", limi
 def api_clear_history():
     """Clear ALL history rows (the History tab's 'Clear all history' button)."""
     return {"ok": True, "deleted": store.clear_history()}
+
+@app.post("/api/input")
+def api_input(payload: dict = Body(...)):
+    """External input (e.g. Node-RED) instead of / alongside the PLC sensors.
+    Body: {"station": "STATION_1", "signal": "uptime" | "count" | "reject", "value": 1}
+      uptime -> counts as that station's running signal (same as a JIG on its Start
+                sensor): sends Uptime 1, and the station goes down after 3 minutes
+                with no further input or sensor signal.
+      count  -> sends Count <value> (default 1) for that station.
+      reject -> sends Reject <value> for that station.
+    Everything goes through the normal send path: History, retry queue, rules."""
+    code = str(payload.get("station", ""))
+    signal = str(payload.get("signal", ""))
+    if code not in STATIONS_BY_CODE:
+        return bad(f"Unknown station '{code}'.", 404)
+    if signal not in ("uptime", "count", "reject"):
+        return bad("signal must be 'uptime', 'count' or 'reject'.")
+    s = STATIONS_BY_CODE[code]
+    if signal == "uptime":
+        runtimes[code].ext_signal = True
+        return {"ok": True, "station": code, "signal": signal,
+                "result": "accepted -- handled on the next poll like a JIG signal"}
+    try:
+        value = int(payload.get("value", 1))
+    except (TypeError, ValueError):
+        return bad("value must be a whole number.")
+    if signal == "count":
+        store.bump_total(code, "count")
+    result = send_signal(code, s["mc_no"], signal, value)
+    return {"ok": True, "station": code, "signal": signal, "value": value, "result": result}
 
 @app.get("/api/queue")
 def api_queue(limit: int = 100, offset: int = 0):
