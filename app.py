@@ -88,7 +88,7 @@ COUNT_SENT_ON_HTTP_200 = True
 # real finished-unit count and is where rejects are noticed, per client confirmation.
 STATIONS = [
     dict(code="STATION_1", mc_no="STATION_1", label="Stacking Bottom Cover Casing",
-         start=(11, 11), stop=(14, 0), sensor2=(11, 12), jig_debounce=3.0, poll_interval=0.05, has_count=False, has_reject=False, reject=None),
+         start=(11, 11), stop=(14, 0), sensor2=(11, 12), poll_interval=0.05, has_count=False, has_reject=False, reject=None),
     dict(code="STATION_2", mc_no="STATION_2", label="Stacking Top Cover Casing",
          start=(14, 1), stop=(14, 4), sensor2=None, poll_interval=0.05, has_count=False, has_reject=False, reject=None),
     dict(code="STATION_3", mc_no="STATION_3", label="Press Lock Cover Casing",
@@ -708,9 +708,10 @@ def poll_station(s):
         store.update_state(code, plc_ok=0, last_attempt_at=now_s())
         return False
 
-    # Uptime -- driven by the Start bit, OR'd with Sensor 2 when the station has one
-    # (only Station 1 -- either bit firing counts as "running", per the client's PDF).
-    effective_trigger = start_raw or sensor2_raw
+    # Uptime -- driven ONLY by the station's Start (JIG) sensor, the same for every
+    # station. Station 1's Sensor 2 (W11.12) is still read and shown on the dashboard,
+    # but it no longer counts as "running": it was keeping Station 1 up with no JIG.
+    effective_trigger = start_raw
     uv, uchanged = rt.uptime_pipe.feed(effective_trigger)
     pv, pchanged = rt.prod_pipe.feed(effective_trigger)
     jig_edge = rt.jig.edge(effective_trigger)

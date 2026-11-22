@@ -284,29 +284,23 @@ def test_production_internal_only_and_count_independent():
     assert rt.cfg["has_count"] and rt.jig.edge(True) is True
     print("PASS: Count is driven by the JIG edge, with no production dependency")
 
-def test_station1_sensor2_or_logic():
-    """Reproduces the fix from the PDF re-check: Station 1's Uptime must fire on
-    Start (W11.11) OR Sensor 2 (W11.12) -- either bit alone must count as running,
-    confirmed directly from the real Node-RED source (both feed the same output)."""
-    cfg = smec.STATIONS_BY_CODE["STATION_1"]
-    assert cfg["sensor2"] == (11, 12), "Station 1 must have Sensor 2 configured at W11.12"
-    for other in ["STATION_2", "STATION_3", "STATION_4", "STATION_5"]:
-        assert smec.STATIONS_BY_CODE[other]["sensor2"] is None, f"{other} must NOT have a sensor2 (Station 1 only)"
-    print("PASS: only Station 1 has Sensor 2 configured, matching the PDF exactly")
-
-    # Simulate poll_station's OR logic directly (start_raw or sensor2_raw)
-    pipe = smec.EdgePipeline()
-    start_raw, sensor2_raw = False, False
-    effective = start_raw or sensor2_raw
-    v, changed = pipe.feed(effective)
-    assert changed is False and pipe.value == 0, "neither bit firing must not report running"
-
-    # Sensor 2 ALONE (Start still off) must still count as running
-    start_raw, sensor2_raw = False, True
-    effective = start_raw or sensor2_raw
-    v, changed = pipe.feed(effective)
-    assert (v, changed) == (1, True), "Sensor 2 alone must trigger Uptime=1, even with Start off"
-    print("PASS: Sensor 2 alone (Start bit off) correctly triggers Uptime=1 for Station 1")
+def test_station1_sensor2_does_not_count_as_running():
+    """Station 1 behaves like every other station: only its Start sensor (W11.11) counts.
+    Sensor 2 (W11.12) being on with no JIG must NOT send Uptime or keep the station up."""
+    cfg, rt, sent, bits, restore = _jig_harness("STATION_1", {"start": (11, 11), "s2": (11, 12)})
+    try:
+        smec.DOWNTIME_GRACE_SECONDS = 0.3
+        bits[(11, 12)] = True                      # Sensor 2 on, no JIG
+        smec.poll_station(cfg)
+        assert [x for x in sent if x[1] == "uptime"] == [], f"Sensor 2 alone must not send Uptime: {sent}"
+        bits[(11, 11)] = True; smec.poll_station(cfg)   # real JIG on Start
+        assert [v for (_, sig, v) in sent if sig == "uptime"] == [1]
+        bits[(11, 11)] = False; smec.poll_station(cfg)  # Sensor 2 still on...
+        time.sleep(0.4); smec.poll_station(cfg); time.sleep(0.3)
+        assert ("STATION_1", "uptime", 0) in sent, f"must go down after grace even with Sensor 2 on: {sent}"
+    finally:
+        restore()
+    print("PASS: Station 1 ignores Sensor 2 -- only Start sends Uptime, and it goes down after the grace time")
 
 def test_concurrent_db_access_does_not_crash():
     """Reproduces the EXACT production crash from the site logs:
@@ -595,13 +589,13 @@ if __name__ == "__main__":
     test_resume_state_on_restart_prevents_duplicate_start()
     test_resume_ignores_stale_state()
     test_production_internal_only_and_count_independent()
-    test_station1_sensor2_or_logic()
     test_concurrent_db_access_does_not_crash()
     test_count_immediate_and_sent_on_http_200()
     test_stop_order_production_then_uptime_and_count_is_one()
     test_multiple_jigs_uptime_1_2_3_and_reset()
     test_station1_two_sensors_count_one_jig_once()
     test_station5_count_per_jig()
+    test_station1_sensor2_does_not_count_as_running()
     test_clear_history()
     test_production_stop_packet_per_station()
     print("\nALL TESTS PASSED")

@@ -76,7 +76,7 @@ async function loadDashboard() {
       <div class="station-metrics">
         ${metric("PLC Link", s.plc_ok ? "OK" : "LOST", plcCls)}
         ${metric("Last Success", s.last_success_at ? s.last_success_at.split(" ")[1] || s.last_success_at : "Never", s.last_success_at ? "na" : "off")}
-        ${metric("Sensor now", s.raw_start == null ? "--" : "Start " + s.raw_start + (s.code === "STATION_1" ? " · S2 " + s.raw_sensor2 : ""), (s.raw_start || s.raw_sensor2) ? "on" : "na")}
+        ${metric("Sensor now", s.raw_start == null ? "--" : "Start " + s.raw_start + (s.code === "STATION_1" ? " · S2 " + s.raw_sensor2 + " (not used)" : ""), s.raw_start ? "on" : "na")}
         ${metric("Last Attempt", s.last_attempt_at ? s.last_attempt_at.split(" ")[1] || s.last_attempt_at : "--", "na")}
       </div>
       ${outputBlock}
