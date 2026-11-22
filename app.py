@@ -511,8 +511,15 @@ def send_signal(station_code, mc_no, signal, value):
     seq = store.next_seq(station_code, signal)
     dt = now_myt_string()
     msg_no = f"{mc_no}/{package_no}_{dt}_{seq}"
-    payload = {"data": {"data": {"datetime": dt, "mc_no": mc_no, PAYLOAD_FIELD[signal]: str(value),
-                        "package_no": package_no, "msg_no": msg_no}}}
+    if signal == "reject":
+        # Exactly the body a manual test proved /machine_reject stores: DD-MM-YYYY datetime,
+        # mc_no and count only -- no package_no / msg_no. (msg_no is still our own key
+        # for History and the retry queue; it is just not sent.)
+        payload = {"data": {"data": {"datetime": now_myt_line_string(), "mc_no": mc_no,
+                            PAYLOAD_FIELD[signal]: str(value)}}}
+    else:
+        payload = {"data": {"data": {"datetime": dt, "mc_no": mc_no, PAYLOAD_FIELD[signal]: str(value),
+                            "package_no": package_no, "msg_no": msg_no}}}
     url = ENDPOINTS[signal]
     store.log_history(station_code, signal, value, mc_no, package_no, msg_no, dt, status="sending")
     try:

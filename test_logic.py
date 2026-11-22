@@ -562,11 +562,14 @@ def test_reject_payload_uses_count_field():
         Handler.fail_count = 0
         smec.send_signal("STATION_5", "STATION_5", "reject", 1)
         d = Handler.last_body["data"]["data"]
-        assert d["count"] == "1" and "rejectCount" not in d, d
+        assert set(d) == {"datetime", "mc_no", "count"}, f"body must be exactly datetime/mc_no/count: {d}"
+        assert d["count"] == "1" and d["mc_no"] == "STATION_5"
+        import re
+        assert re.fullmatch(r"\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2}", d["datetime"]), d["datetime"]
     finally:
         smec.ENDPOINTS["reject"] = orig
         srv.shutdown(); os.remove("test12.db")
-    print("PASS: Reject is sent in the 'count' field, as /machine_reject expects")
+    print("PASS: Reject body is exactly {datetime DD-MM-YYYY, mc_no, count}, like the working manual test")
 
 def test_clear_history():
     import os
